@@ -44,6 +44,10 @@ inputs:
     description: 'specific build mirror to use'
     required: false
     default: https://mirror.easyname.at/manjaro
+  archlinux-core-db-urls:
+    description: 'space separated fallback URLs to Arch core.db (x86_64) used to resolve the latest archlinux-keyring package'
+    required: false
+    default: "https://mirrors.edge.kernel.org/archlinux/core/os/x86_64/core.db https://mirrors.ocf.berkeley.edu/archlinux/core/os/x86_64/core.db"
   gpg-secret-key-base64:
     description: 'base64 encoded gpg secret key (without a passphrase) to sign the zip (if set)'
     required: false
@@ -170,12 +174,52 @@ runs:
           # temp solution until Arch infra gets fixed
           # A központi archlinux.org helyett egy stabil mirror-t használunk (pl. Rackspace vagy Kernel.org)
           # Ez kikerüli a GnuTLS / Pull function hibát.
-          wget --user-agent="Mozilla/5.0" \
-               https://mirrors.edge.kernel.org/archlinux/core/os/x86_64/archlinux-keyring-20260107-1-any.pkg.tar.zst \
-               -O /tmp/archlinux-keyring.tar.zst || \
-          wget --user-agent="Mozilla/5.0" \
-               https://mirrors.ocf.berkeley.edu/archlinux/core/os/x86_64/archlinux-keyring-20260107-1-any.pkg.tar.zst \
-               -O /tmp/archlinux-keyring.tar.zst
+          ARCH_CORE_DB_URLS="${{ inputs.archlinux-core-db-urls }}"
+          UA="Mozilla/5.0"
+
+          tmpdb="$(mktemp)"
+          tmpdesc="$(mktemp)"
+          pkgfile=""
+
+          # Resolve latest package filename from the first reachable core.db
+          for dburl in ${ARCH_CORE_DB_URLS}; do
+            echo "## archlinux-keyring: trying core.db ${dburl}"
+            if wget --user-agent="${UA}" -qO "${tmpdb}" "${dburl}"; then
+              entry="$(bsdtar -tf "${tmpdb}" 2>/dev/null | grep -E '^archlinux-keyring-[^/]+/desc$' | head -n 1 || true)"
+              if [ -n "${entry}" ]; then
+                bsdtar -xOf "${tmpdb}" "${entry}" > "${tmpdesc}" 2>/dev/null || true
+                pkgfile="$(awk '$0=="%FILENAME%"{getline; print; exit}' "${tmpdesc}" || true)"
+                if [ -n "${pkgfile}" ]; then
+                  echo "## archlinux-keyring: latest package ${pkgfile}"
+                  break
+                fi
+              fi
+            fi
+          done
+
+          if [ -z "${pkgfile}" ]; then
+            echo "ERROR: Could not resolve latest archlinux-keyring from core.db"
+            exit 1
+          fi
+
+          # Download package from any configured mirror (same directory as core.db)
+          dl_ok=0
+          for dburl in ${ARCH_CORE_DB_URLS}; do
+            base="${dburl%/*}"
+            pkgurl="${base}/${pkgfile}"
+            echo "## archlinux-keyring: trying package ${pkgurl}"
+            if wget --user-agent="${UA}" -qO /tmp/archlinux-keyring.tar.zst "${pkgurl}"; then
+              dl_ok=1
+              break
+            fi
+          done
+
+          rm -f "${tmpdb}" "${tmpdesc}"
+
+          if [ "${dl_ok}" -ne 1 ]; then
+            echo "ERROR: Could not download ${pkgfile} from configured mirrors"
+            exit 1
+          fi
           #wget https://mirrors.manjaro.org/repo/pool/sync/archlinux-keyring-20250807.1-1-any.pkg.tar.zst -O /tmp/archlinux-keyring.tar.zst
           tar --use-compress-program=unzstd --strip-components=4 --wildcards -xvf /tmp/archlinux-keyring.tar.zst usr/share/pacman/keyrings/*
           sudo install -m0644 archlinux.gpg /usr/share/pacman/keyrings/
