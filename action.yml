@@ -166,15 +166,9 @@ runs:
 
         mkdir -p archlinux-keyring
         pushd archlinux-keyring
-          # A központi archlinux.org helyett egy stabil mirror-t használunk (pl. Rackspace vagy Kernel.org)
-          # Ez kikerüli a GnuTLS / Pull function hibát.
-          wget --user-agent="Mozilla/5.0" \
-               https://mirrors.edge.kernel.org/archlinux/core/os/x86_64/archlinux-keyring-20260107-1-any.pkg.tar.zst \
-               -O /tmp/archlinux-keyring.tar.zst || \
-          wget --user-agent="Mozilla/5.0" \
-               https://mirrors.ocf.berkeley.edu/archlinux/core/os/x86_64/archlinux-keyring-20260107-1-any.pkg.tar.zst \
-               -O /tmp/archlinux-keyring.tar.zst
-          #wget https://mirrors.manjaro.org/repo/pool/sync/archlinux-keyring-20250807.1-1-any.pkg.tar.zst -O /tmp/archlinux-keyring.tar.zst
+          #wget https://archlinux.org/packages/core/any/archlinux-keyring/download -O /tmp/archlinux-keyring.tar.zst
+          # temp solution until Arch infra gets fixed
+          wget https://mirrors.manjaro.org/repo/pool/sync/archlinux-keyring-20260107-2-any.pkg.tar.zst -O /tmp/archlinux-keyring.tar.zst
           tar --use-compress-program=unzstd --strip-components=4 --wildcards -xvf /tmp/archlinux-keyring.tar.zst usr/share/pacman/keyrings/*
           sudo install -m0644 archlinux.gpg /usr/share/pacman/keyrings/
           sudo install -m0644 archlinux-trusted /usr/share/pacman/keyrings/
@@ -222,9 +216,7 @@ runs:
       env:
         CUSTOM_REPO: ${{ inputs.custom-repo }}
       run: |
-        sudo git clone --depth 1 \
-      --branch awesome-manjaro \
-      https://github.com/megvadulthangya/manjaro-tools.git
+        sudo git clone --depth 1 https://gitlab.manjaro.org/tools/development-tools/manjaro-tools.git
         cd manjaro-tools
         sudo make SYSCONFDIR=/etc PREFIX=/usr
         sudo make SYSCONFDIR=/etc PREFIX=/usr install_base
@@ -234,6 +226,79 @@ runs:
           echo "## adding repo [${CUSTOM_REPO}]"
           sudo sed -i -e "s/\[core\]/\[${CUSTOM_REPO}\]\nSigLevel = PackageRequired\nInclude = \/etc\/pacman\.d\/mirrorlist\n\n\[core\]/" /usr/share/manjaro-tools/pacman-multilib.conf
         fi
+    - id: add-gshoots-repo
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        REPO_NAME="manjaro-awesome"
+        REPO_SERVER='https://repo.gshoots.hu/$repo/$arch'
+        REPO_KEY_URL="https://repo.gshoots.hu/manjaro-awesome/x86_64/manjaro-awesome.pub"
+
+        echo "## adding repo [${REPO_NAME}] (gshoots)"
+        tmpkey="$(mktemp)"
+        wget -qO "${tmpkey}" "${REPO_KEY_URL}"
+
+        # Import + locally sign repo key so pacman trusts PackageRequired signatures
+        sudo pacman-key --add "${tmpkey}"
+        FPR="$(gpg --with-colons --import-options show-only --import "${tmpkey}" | awk -F: '$1=="fpr"{print $10; exit}')"
+        if [ -z "${FPR}" ]; then
+          echo "ERROR: Could not extract key fingerprint from ${REPO_KEY_URL}"
+          exit 1
+        fi
+        sudo pacman-key --lsign-key "${FPR}"
+        rm -f "${tmpkey}"
+
+        ensure_repo_conf() {
+          local conf="$1"
+          local tmp
+          tmp="$(mktemp)"
+
+          sudo awk -v repo="${REPO_NAME}" -v server="${REPO_SERVER}" '
+            BEGIN { seen=0; skipping=0 }
+            function print_block() {
+              print "[" repo "]"
+              print "SigLevel = PackageRequired"
+              print "Server = " server
+              print ""
+            }
+            {
+              if ($0 == "[" repo "]") {
+                if (seen == 0) {
+                  seen = 1
+                  print_block()
+                }
+                skipping = 1
+                next
+              }
+              if (skipping == 1) {
+                if ($0 ~ /^\[[^\]]+\]$/) {
+                  skipping = 0
+                  # fall through to process this header line
+                } else {
+                  next
+                }
+              }
+              if ($0 == "[extra]" && seen == 0) {
+                print_block()
+                seen = 1
+              }
+              print
+            }
+            END {
+              if (seen == 0) {
+                print ""
+                print_block()
+              }
+            }
+          ' "${conf}" > "${tmp}"
+
+          sudo install -m0644 "${tmp}" "${conf}"
+          rm -f "${tmp}"
+        }
+
+        ensure_repo_conf /usr/share/manjaro-tools/pacman-multilib.conf
+        ensure_repo_conf /usr/share/manjaro-tools/pacman-default.conf
     - id: checkout-iso-profiles
       shell: bash
       env:
