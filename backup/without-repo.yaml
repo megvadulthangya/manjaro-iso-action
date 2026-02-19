@@ -118,14 +118,8 @@ runs:
           fakeroot \
           dh-autoreconf \
           haveged \
-          libgpg-error-dev \
-          libassuan-dev \
-          libksba-dev \
-          libnpth0-dev \
-          libldap2-dev \
           libsqlite3-dev \
-          libbz2-dev \
-          libreadline-dev \
+          libarchive-dev \
           zlib1g-dev \
           libncursesw5-dev \
           gettext \
@@ -139,7 +133,6 @@ runs:
           python3-wheel \
           python3-dev \
           rsync \
-          sshfs \
           libglib2.0-dev \
           p7zip-full \
           imagemagick \
@@ -150,24 +143,6 @@ runs:
           mktorrent
 
         sudo pip3 install yq
-
-    - id: install-manjaro-build-tools
-      shell: bash
-      run: |
-        sudo git clone --depth 1 https://gitlab.manjaro.org/tools/development-tools/manjaro-build.git
-        cd manjaro-build
-        sudo make SYSCONFDIR=/etc PREFIX=/usr
-        sudo make SYSCONFDIR=/etc PREFIX=/usr install
-        cd ..
-
-    - id: install-manjaro-pkg-tools
-      shell: bash
-      run: |
-        sudo git clone --depth 1 https://gitlab.manjaro.org/tools/development-tools/manjaro-pkg.git
-        cd manjaro-pkg
-        sudo make SYSCONFDIR=/etc PREFIX=/usr
-        sudo make SYSCONFDIR=/etc PREFIX=/usr install
-        cd ..
 
     - id: install-arch-install-scripts
       shell: bash
@@ -257,48 +232,51 @@ runs:
 
         # temp workaround for archlinux-keyring installation on ubuntu
         # Arch infra sometimes fails with GnuTLS / Pull function errors, so we resolve the latest package via core.db
-        pushd /tmp
-        sudo mkdir -p archlinux-keyring
-        pushd archlinux-keyring
-          ARCH_CORE_DB_URLS="${{ inputs.archlinux-core-db-urls }}"
-          UA="Mozilla/5.0"
-
-          tmpdb="$(mktemp)"
-          tmpdesc="$(mktemp)"
-          pkgfile=""
-
-          for dburl in ${ARCH_CORE_DB_URLS}; do
-            echo "## archlinux-keyring: trying core.db ${dburl}"
-            if wget --user-agent="${UA}" -qO "${tmpdb}" "${dburl}"; then
-              entry="$(bsdtar -tf "${tmpdb}" 2>/dev/null | grep -E '^archlinux-keyring-[^/]+/desc$' | head -n 1 || true)"
-              if [ -n "${entry}" ]; then
-                bsdtar -xOf "${tmpdb}" "${entry}" > "${tmpdesc}" 2>/dev/null || true
-                pkgfile="$(awk '$0=="%FILENAME%"{getline; print; exit}' "${tmpdesc}" || true)"
-                if [ -n "${pkgfile}" ]; then
-                  echo "## archlinux-keyring: latest package ${pkgfile}"
-                  break
-                fi
-              fi
+        mkdir -p /tmp/archlinux-keyring
+        pushd /tmp/archlinux-keyring
+          mkdir -p db tmp
+          pushd db
+            # try each URL until one works
+            set +e
+            dl_ok=0
+            for url in ${{ inputs.archlinux-core-db-urls }}; do
+              echo "## downloading core.db from ${url}"
+              curl -fL "${url}" -o core.db && dl_ok=1 && break
+            done
+            set -e
+            if [ "${dl_ok}" -ne 1 ]; then
+              echo "ERROR: Could not download core.db from any provided URL"
+              exit 1
             fi
-          done
 
-          if [ -z "${pkgfile}" ]; then
-            echo "ERROR: Could not resolve latest archlinux-keyring from core.db"
-            exit 1
-          fi
+            # Extract archlinux-keyring package filename from core.db
+            # core.db is a tar.gz containing desc files
+            tar -xf core.db
+            # find matching desc for archlinux-keyring
+            pkgfile=$(grep -R "^FILENAME" -n archlinux-keyring-*/* 2>/dev/null | head -n1 | sed -E 's/.*= *//')
+            if [ -z "${pkgfile}" ]; then
+              # fallback: parse desc manually
+              tmpdesc=$(find . -maxdepth 2 -name desc -path "*archlinux-keyring*/*" | head -n1)
+              pkgfile=$(awk '/%FILENAME%/{getline; print}' "${tmpdesc}")
+            fi
+            if [ -z "${pkgfile}" ]; then
+              echo "ERROR: Could not determine archlinux-keyring package filename from core.db"
+              exit 1
+            fi
+            echo "## resolved archlinux-keyring pkg: ${pkgfile}"
+          popd
 
+          # Download the package from a mirror (try the same URLs but path-adjusted)
+          set +e
           dl_ok=0
-          for dburl in ${ARCH_CORE_DB_URLS}; do
-            base="${dburl%/*}"
-            pkgurl="${base}/${pkgfile}"
-            echo "## archlinux-keyring: trying package ${pkgurl}"
-            if wget --user-agent="${UA}" -qO /tmp/archlinux-keyring.tar.zst "${pkgurl}"; then
-              dl_ok=1
-              break
-            fi
+          for base in ${{ inputs.archlinux-core-db-urls }}; do
+            # base points to .../core.db ; convert to package base dir .../
+            pkgbase=$(echo "${base}" | sed 's|/core\.db$|/|')
+            echo "## trying to download ${pkgfile} from ${pkgbase}"
+            curl -fL "${pkgbase}${pkgfile}" -o /tmp/archlinux-keyring.tar.zst && dl_ok=1 && break
           done
-
-          rm -f "${tmpdb}" "${tmpdesc}"
+          set -e
+          rm -rf db
 
           if [ "${dl_ok}" -ne 1 ]; then
             echo "ERROR: Could not download ${pkgfile} from configured mirrors"
@@ -381,205 +359,53 @@ runs:
     - id: patch-iso-profiles
       shell: bash
       env:
-        EDITION: ${{ inputs.edition }}
-        BRANCH: ${{ inputs.branch }}
-        SCOPE: ${{ inputs.scope }}
         VERSION: ${{ inputs.version }}
+        CODENAME: ${{ inputs.code-name }}
         KERNEL: ${{ inputs.kernel }}
-        CODE_NAME: ${{ inputs.code-name }}
       run: |
-        # patch iso-profiles profile.conf
-        FILE=./iso-profiles/${EDITION}/profile.conf
+        if [ -z "${VERSION}" ] && [ -z "${CODENAME}" ] && [ -z "${KERNEL}" ]; then
+          echo "## no iso profiles patching needed"
+          exit 0
+        fi
+        echo "## patching iso-profiles"
+        if [ -z "${VERSION}" ]; then
+          VERSION=upstream
+        fi
+        if [ -z "${CODENAME}" ]; then
+          CODENAME=upstream
+        fi
+        if [ -z "${KERNEL}" ]; then
+          KERNEL=linux510
+        fi
+        echo "## version: ${VERSION}, codename: ${CODENAME}, kernel: ${KERNEL}"
+        # patch profile defaults
+        FILE="./iso-profiles/manjaro-${{ inputs.edition }}/profile.conf"
         if [ -f "${FILE}" ]; then
-          echo "## patching profile.conf"
-          if [ ! -z ${BRANCH} ]; then
-            sudo sed -i -e "s/^branch=.*/branch=${BRANCH}/" ${FILE}
-          fi
-          if [ ! -z ${SCOPE} ]; then
-            sudo sed -i -e "s/^scope=.*/scope=${SCOPE}/" ${FILE}
-          fi
-          if [ ! -z ${VERSION} ]; then
-            sudo sed -i -e "s/^version=.*/version=${VERSION}/" ${FILE}
-          fi
-          if [ ! -z ${KERNEL} ]; then
-            sudo sed -i -e "s/^kernel=.*/kernel=${KERNEL}/" ${FILE}
-          fi
-          if [ ! -z ${CODE_NAME} ]; then
-            sudo sed -i -e "s/^code_name=.*/code_name=${CODE_NAME}/" ${FILE}
-          fi
+          sudo sed -i -E "s/^display_version=.*/display_version=${VERSION}/" "${FILE}" || true
+          sudo sed -i -E "s/^codename=.*/codename=${CODENAME}/" "${FILE}" || true
+          sudo sed -i -E "s/^kernel=.*/kernel=('${KERNEL}')/" "${FILE}" || true
         else
-          echo "## ${FILE} not found"
-          exit 1
+          echo "## profile.conf not found: ${FILE}"
         fi
 
     - id: image-build
       shell: bash
       env:
         EDITION: ${{ inputs.edition }}
+        BRANCH: ${{ inputs.branch }}
+        SCOPE: ${{ inputs.scope }}
       run: |
-        echo "## building iso"
-        sudo buildiso -p ${EDITION}
+        echo "## Building iso: edition=${EDITION}, branch=${BRANCH}, scope=${SCOPE}"
+        sudo buildiso -p "manjaro-${EDITION}" -b "${BRANCH}" -s "${SCOPE}"
 
-        # find iso
-        ISO=$(ls -1t /var/cache/manjaro-tools/iso/*${EDITION}*.iso | head -n 1)
-        if [ -z "${ISO}" ]; then
-          echo "## ISO not found"
+        # try to find output iso
+        iso=$(ls -1t *.iso 2>/dev/null | head -n1 || true)
+        if [ -z "${iso}" ]; then
+          iso=$(find . -maxdepth 2 -type f -name "*.iso" | head -n1 || true)
+        fi
+        if [ -z "${iso}" ]; then
+          echo "ERROR: Could not find generated .iso"
           exit 1
         fi
-
-        echo "file-path=${ISO}" >> $GITHUB_OUTPUT
-
-    - id: upload-prepare
-      shell: bash
-      env:
-        EDITION: ${{ inputs.edition }}
-        VERSION: ${{ inputs.version }}
-        ISO: ${{ steps.image-build.outputs.file-path }}
-      run: |
-        # determine version if not given
-        if [ -z "${VERSION}" ]; then
-          VERSION=$(ls -1t /var/cache/manjaro-tools/iso/*${EDITION}*.iso | head -n 1 | sed -e 's/.*-\([0-9\.]\+\)-.*/\1/')
-        fi
-
-        ISO_FILE=$(basename ${ISO})
-        ISO_DIR=$(dirname ${ISO})
-        FILES="${ISO}"
-
-        # checksums
-        pushd ${ISO_DIR}
-          sha256sum ${ISO_FILE} > ${ISO_FILE}.sha256
-          b2sum ${ISO_FILE} > ${ISO_FILE}.b2
-          FILES="${FILES} ${ISO_DIR}/${ISO_FILE}.sha256 ${ISO_DIR}/${ISO_FILE}.b2"
-        popd
-
-        # create torrent
-        mktorrent -v -a udp://tracker.opentrackr.org:1337 -l 21 \
-          -w "https://download.manjaro.org/${EDITION}/${VERSION}/${ISO_FILE}" \
-          -o ${ISO}.torrent ${ISO}
-        FILES="${FILES} ${ISO}.torrent"
-
-        echo "version=${VERSION}" >> $GITHUB_OUTPUT
-        echo "iso-file=${ISO_FILE}" >> $GITHUB_OUTPUT
-        echo "upload-files=${FILES}" >> $GITHUB_OUTPUT
-
-    - id: sign-zip
-      shell: bash
-      env:
-        SECRET_KEY_B64: ${{ inputs.gpg-secret-key-base64 }}
-        PASSPHRASE: ${{ inputs.gpg-passphrase }}
-        ISO: ${{ steps.image-build.outputs.file-path }}
-      run: |
-        if [ -z "${SECRET_KEY_B64}" ]; then
-          echo "## no gpg key given - not signing"
-          exit 0
-        fi
-
-        echo "## importing gpg key"
-        echo "${SECRET_KEY_B64}" | base64 -d > /tmp/secret.key
-        gpg --batch --import /tmp/secret.key
-
-        echo "## signing zip"
-        zip -j ${ISO}.zip ${ISO}
-        gpg --batch --yes --pinentry-mode loopback --passphrase "${PASSPHRASE}" \
-          --output ${ISO}.zip.sig --detach-sign ${ISO}.zip
-
-    - id: upload-osdn
-      shell: bash -O extglob {0}
-      run: |
-        # if is not yet supported in composite https://github.com/actions/runner/blob/main/docs/adrs/0549-composite-run-steps.md#if-condition
-        if [ -z "${{ inputs.osdn-project }}" ]; then 
-          echo "## no OSDN project given"
-          exit 0
-        fi
-
-        echo "## OSDN upload"
-        mkdir -p ~/.ssh
-        echo "${{ inputs.osdn-key }}" > ~/.ssh/id_rsa
-        chmod 600 ~/.ssh/id_rsa
-        ssh-keyscan -t rsa storage.osdn.net >> ~/.ssh/known_hosts
-
-        ## create target dir
-        rsync -vaP --stats -e ssh ${{ inputs.edition }} \
-          ${{ inputs.osdn-user }}@storage.osdn.net:/storage/groups/m/ma/${{ inputs.osdn-project }}/
-
-        ## upload
-        rsync -vaP --stats -e ssh ${{ steps.upload-prepare.outputs.upload-files }} \
-          ${{ inputs.osdn-user }}@storage.osdn.net:/storage/groups/m/ma/${{ inputs.osdn-project }}/${{ inputs.edition }}/${{ inputs.version }}/
-
-    - id: upload-sourceforge
-      shell: bash -O extglob {0}
-      run: |
-        # if is not yet supported in composite https://github.com/actions/runner/blob/main/docs/adrs/0549-composite-run-steps.md#if-condition
-        if [ -z "${{ inputs.sf-project }}" ]; then 
-          echo "## no Sourceforge project given"
-          exit 0
-        fi
-
-        echo "## sourceforge upload"
-        mkdir -p ~/.ssh
-        echo "${{ inputs.sf-key }}" > ~/.ssh/id_rsa
-        chmod 600 ~/.ssh/id_rsa
-        ssh-keyscan -t rsa frs.sourceforge.net >> ~/.ssh/known_hosts
-
-        ## create target dir
-        rsync -vaP --stats -e ssh ${{ inputs.edition }} \
-          ${{ inputs.sf-user }}@frs.sourceforge.net:/home/frs/project/${{ inputs.sf-project }}/
-
-        ## upload
-        rsync -vaP --stats -e ssh ${{ steps.upload-prepare.outputs.upload-files }} \
-          ${{ inputs.sf-user }}@frs.sourceforge.net:/home/frs/project/${{ inputs.sf-project }}/${{ inputs.edition }}/${{ inputs.version }}/
-
-    - id: upload-github-release
-      shell: bash -O extglob {0}
-      env:
-        LIMIT_MB: '2000'
-      run: |
-        # if is not yet supported in composite https://github.com/actions/runner/blob/main/docs/adrs/0549-composite-run-steps.md#if-condition
-        if [ -z "${{ inputs.release-tag }}" ]; then 
-          echo "## no release tag given"
-          exit 0
-        fi
-        echo "## github upload"
-
-        echo ${{ github.token }} | gh auth login --with-token
-        gh release create ${{ inputs.release-tag }} --title ${{ inputs.release-tag }} --repo ${{ github.repository }} --notes "automated release" || echo "release already exists"
-
-        GITHUB_LINK=https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ inputs.release-tag }}
-
-        if [[ -z "$(du --threshold=${LIMIT_MB}M ${{ steps.image-build.outputs.file-path }})" ]]; then
-          # iso is small enough to upload already
-          gh release upload ${{ inputs.release-tag }} --repo ${{ github.repository }} --clobber \
-            ${{ steps.upload-prepare.outputs.upload-files }}
-        else
-          # iso is too big - creating a split-zip
-          zip -j -s ${LIMIT_MB}m ${{ steps.image-build.outputs.file-path }}.zip ${{ steps.image-build.outputs.file-path }}
-
-          REMOTE_FILES=$(find . -maxdepth 1 -name "*.z*" -exec basename {} \; | xargs -I{} echo "-w \"${GITHUB_LINK}/{}\"")
-          gh release upload ${{ inputs.release-tag }} --repo ${{ github.repository }} --clobber \
-            ./${{ steps.image-build.outputs.file-path }}+(.z*|.sha*|.pkgs|.sig|.torrent)
-        fi
-
-    - name: upload-cdn77-s3
-      shell: bash -O extglob {0}
-      run: |
-        # if is not yet supported in composite https://github.com/actions/runner/blob/main/docs/adrs/0549-composite-run-steps.md#if-condition
-        if [ -z "${{ inputs.s3-cfg }}" ]; then
-          echo "## credentials for cdn77 S3 upload not provided. Skipping."
-          exit 0
-        fi
-
-        echo "## create torrent"
-        mktorrent -v -a udp://tracker.opentrackr.org:1337 -l 21 \
-          -w "https://download.manjaro.org/${{ inputs.edition }}/${{ inputs.version }}/${{ steps.image-build.outputs.file-path }}" \
-          -o ${{ steps.image-build.outputs.file-path }}.torrent ${{ steps.image-build.outputs.file-path }}
-
-        echo "## cdn77 S3 upload"
-        # copy config
-        echo "${{ inputs.s3-cfg }}" > /home/runner/.s3cfg
-        # create bash array and mv files to dir
-        upload_files=( "${{ steps.upload-prepare.outputs.upload-files }}" )
-        for f in ${upload_files[@]}; do
-          mv ${f} "${{ inputs.edition }}/${{ inputs.version }}/"
-        done
-        # upload
-        s3cmd sync --progress --recursive -F "${{ inputs.edition }}" s3://s3downloadseu/
+        echo "## Generated ISO: ${iso}"
+        echo "file-path=${iso}" >> "$GITHUB_OUTPUT"
