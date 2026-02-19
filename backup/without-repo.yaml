@@ -127,11 +127,8 @@ runs:
           xorriso \
           wget \
           curl \
-          python3-pip
-
-        sudo python3 -m pip install --upgrade pip
-        sudo python3 -m pip install meson
-        sudo python3 -m pip install ninja
+          meson \
+          ninja-build
 
     - id: install-pacman
       shell: bash
