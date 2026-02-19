@@ -118,62 +118,151 @@ runs:
           fakeroot \
           dh-autoreconf \
           haveged \
-          os-prober \
-          kwalify \
-          dosfstools \
-          libisoburn1 \
-          squashfs-tools \
-          docbook2x \
-          mktorrent \
-          doxygen \
-          zstd \
-          s3cmd \
-          xorriso
-        sudo python3 -m pip install meson
-        sudo python3 -m pip install ninja
-    - id: install-pacman
+          libgpg-error-dev \
+          libassuan-dev \
+          libksba-dev \
+          libnpth0-dev \
+          libldap2-dev \
+          libsqlite3-dev \
+          libbz2-dev \
+          libreadline-dev \
+          zlib1g-dev \
+          libncursesw5-dev \
+          gettext \
+          autopoint \
+          docbook-xsl \
+          xsltproc \
+          lzop \
+          cpio \
+          python3-pip \
+          python3-setuptools \
+          python3-wheel \
+          python3-dev \
+          rsync \
+          sshfs \
+          libglib2.0-dev \
+          libfuse2 \
+          fuse \
+          fuse3 \
+          p7zip-full \
+          imagemagick \
+          gnupg \
+          squid \
+          libparse-yapp-perl \
+          pkgconf \
+          mktorrent
+
+        sudo pip3 install yq
+
+    - id: install-manjaro-build-tools
+      shell: bash
+      run: |
+        sudo git clone --depth 1 https://gitlab.manjaro.org/tools/development-tools/manjaro-build.git
+        cd manjaro-build
+        sudo make SYSCONFDIR=/etc PREFIX=/usr
+        sudo make SYSCONFDIR=/etc PREFIX=/usr install
+        cd ..
+
+    - id: install-manjaro-pkg-tools
+      shell: bash
+      run: |
+        sudo git clone --depth 1 https://gitlab.manjaro.org/tools/development-tools/manjaro-pkg.git
+        cd manjaro-pkg
+        sudo make SYSCONFDIR=/etc PREFIX=/usr
+        sudo make SYSCONFDIR=/etc PREFIX=/usr install
+        cd ..
+
+    - id: install-arch-install-scripts
       shell: bash
       env:
-        PACMAN_VERSION: 6.0.2
+        VERSION: "27"
       run: |
-        sudo git clone --depth 1 https://gitlab.manjaro.org/packages/core/pacman.git
-        pushd pacman
-          sudo wget https://sources.archlinux.org/other/pacman/pacman-${PACMAN_VERSION}.tar.xz
-          sudo tar -xvf pacman-${PACMAN_VERSION}.tar.xz
-          pushd pacman-${PACMAN_VERSION}
-            sudo meson --prefix=/usr \
-                      --buildtype=plain \
-                      -Ddoc=disabled \
-                      -Ddoxygen=enabled \
-                      -Dscriptlet-shell=/usr/bin/bash \
-                      -Dldconfig=/usr/bin/ldconfig \
-                      build
-            sudo meson compile -C build
-            sudo meson install -C build
-          popd
-          sudo install -m644 pacman.conf /etc/pacman.conf
-          sudo install -m644 makepkg.conf /etc/
-          sudo mkdir -p /etc/pacman.d
-          sudo touch /etc/pacman.d/mirrorlist
-        popd
+        sudo wget https://github.com/archlinux/arch-install-scripts/archive/refs/tags/v${VERSION}.tar.gz -O arch-install-scripts.tar.gz
+        sudo tar -xvf arch-install-scripts.tar.gz
+        sudo make -C arch-install-scripts-${VERSION}
+        sudo make -C arch-install-scripts-${VERSION} check
+        sudo make -C arch-install-scripts-${VERSION} PREFIX=/usr install
+
+        sudo wget https://gitlab.manjaro.org/applications/pacman-mirrors/-/tree/master/data/etc/pacman-mirrors.conf -O /etc/pacman-mirrors.conf
+
+    - id: install-calamares-tools
+      shell: bash
+      run: |
+        sudo git clone --depth 1 https://gitlab.manjaro.org/applications/calamares-tools.git
+
+        cd calamares-tools
+        sudo install -d /usr/share/calamares/
+        sudo cp -rv schemas/ /usr/share/calamares/
+
+    - id: install-mkinitcpio
+      shell: bash
+      env:
+        VERSION: "32"
+      run: |
+        sudo wget https://gitlab.archlinux.org/archlinux/mkinitcpio/mkinitcpio/-/archive/v${VERSION}/mkinitcpio-v${VERSION}.tar.gz
+        sudo tar -xf mkinitcpio-v${VERSION}.tar.gz
+        sudo make -C mkinitcpio-v${VERSION} install
+        sudo sed -i -e 's|File|Path|' /usr/share/libalpm/hooks/*hook
+
+    - id: install-manjaro-tools
+      shell: bash
+      env:
+        CUSTOM_REPO: ${{ inputs.custom-repo }}
+      run: |
+        sudo git clone --depth 1 \
+          --branch awesome-manjaro \
+          https://github.com/megvadulthangya/manjaro-tools.git
+        cd manjaro-tools
+        sudo make SYSCONFDIR=/etc PREFIX=/usr
+        sudo make SYSCONFDIR=/etc PREFIX=/usr install_base
+        sudo make SYSCONFDIR=/etc PREFIX=/usr install_yaml
+        sudo make SYSCONFDIR=/etc PREFIX=/usr install_iso
+        if [ ! -z ${CUSTOM_REPO} ]; then
+          echo "## adding repo [${CUSTOM_REPO}]"
+          sudo sed -i -e "s/\[core\]/\[${CUSTOM_REPO}\]\nSigLevel = PackageRequired\nInclude = \/etc\/pacman\.d\/mirrorlist\n\n\[core\]/" /usr/share/manjaro-tools/pacman-multilib.conf
+        fi
+
+    - id: checkout-iso-profiles
+      shell: bash
+      env:
+        REPO: ${{ inputs.iso-profiles-repo }}
+        BRANCH: ${{ inputs.iso-profiles-branch }}
+      run: sudo git clone ${BRANCH:+--branch ${BRANCH}} --depth 1 ${REPO} iso-profiles
+
+    - id: cleanup_space_workaround
+      shell: bash
+      run: |
+        df -h
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+        sudo rm -rf /opt/hostedtoolcache/Ruby || true
+        sudo rm -rf /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk || true
+        sudo rm -rf /opt/hostedtoolcache/go || true
+        sudo apt-get clean || true
+        df -h
+
     - id: install-keyrings
       shell: bash
       run: |
-        sudo install -dm755 /usr/share/pacman/keyrings/
+        # install keyrings - needed for manjaro-chroot
+        sudo bash -c "$(wget 'https://raw.githubusercontent.com/endeavouros-team/PKGBUILDS/master/endeavouros-mirrorlist/endeavouros-mirrorlist.install' -qO -)" || echo "endeavouros-mirrorlist: already installed"
 
-        sudo git clone --depth 1 https://gitlab.manjaro.org/packages/core/manjaro-keyring.git
-        pushd manjaro-keyring
-          sudo install -m0644 manjaro.gpg /usr/share/pacman/keyrings/
-          sudo install -m0644 manjaro-trusted /usr/share/pacman/keyrings/
-          sudo install -m0644 manjaro-revoked /usr/share/pacman/keyrings/
+        sudo mkdir -p /etc/pacman.d/gnupg
+        pushd /etc/pacman.d/gnupg
+          sudo pacman-key --init
+          sudo pacman-key --populate archlinux
+          sudo pacman-key --populate manjaro
         popd
 
-        mkdir -p archlinux-keyring
+        sudo pacman-key --populate archlinux manjaro
+
+        # Update keyrings to include latest key additions
+        sudo pacman -Sy --noconfirm manjaro-keyring archlinux-keyring
+
+        # temp workaround for archlinux-keyring installation on ubuntu
+        # Arch infra sometimes fails with GnuTLS / Pull function errors, so we resolve the latest package via core.db
+        pushd /tmp
+        sudo mkdir -p archlinux-keyring
         pushd archlinux-keyring
-          #wget https://archlinux.org/packages/core/any/archlinux-keyring/download -O /tmp/archlinux-keyring.tar.zst
-          # temp solution until Arch infra gets fixed
-          # A központi archlinux.org helyett egy stabil mirror-t használunk (pl. Rackspace vagy Kernel.org)
-          # Ez kikerüli a GnuTLS / Pull function hibát.
           ARCH_CORE_DB_URLS="${{ inputs.archlinux-core-db-urls }}"
           UA="Mozilla/5.0"
 
@@ -181,7 +270,6 @@ runs:
           tmpdesc="$(mktemp)"
           pkgfile=""
 
-          # Resolve latest package filename from the first reachable core.db
           for dburl in ${ARCH_CORE_DB_URLS}; do
             echo "## archlinux-keyring: trying core.db ${dburl}"
             if wget --user-agent="${UA}" -qO "${tmpdb}" "${dburl}"; then
@@ -202,7 +290,6 @@ runs:
             exit 1
           fi
 
-          # Download package from any configured mirror (same directory as core.db)
           dl_ok=0
           for dburl in ${ARCH_CORE_DB_URLS}; do
             base="${dburl%/*}"
@@ -220,153 +307,81 @@ runs:
             echo "ERROR: Could not download ${pkgfile} from configured mirrors"
             exit 1
           fi
-          #wget https://mirrors.manjaro.org/repo/pool/sync/archlinux-keyring-20250807.1-1-any.pkg.tar.zst -O /tmp/archlinux-keyring.tar.zst
+
           tar --use-compress-program=unzstd --strip-components=4 --wildcards -xvf /tmp/archlinux-keyring.tar.zst usr/share/pacman/keyrings/*
           sudo install -m0644 archlinux.gpg /usr/share/pacman/keyrings/
           sudo install -m0644 archlinux-trusted /usr/share/pacman/keyrings/
-          sudo install -m0644 archlinux-revoked /usr/share/pacman/keyrings/
+        popd
         popd
 
-        sudo pacman-key --init
-        sudo pacman-key --populate archlinux manjaro
+    - id: install-manjaro-tools-dependencies
+      shell: bash
+      run: |
+        sudo pacman -S --noconfirm --needed \
+          archlinux-mirrorlist \
+          pacman-mirrors \
+          pacman-contrib \
+          manjaro-release \
+          manjaro-keyring \
+          manjaro-settings-manager \
+          manjaro-system \
+          pacman \
+          inxi
 
-        for gpg_key in ${{ inputs.additional-trusted-gpg }}; do
-          sudo pacman-key --keyserver keys.openpgp.org --recv-key $gpg_key
-          sudo pacman-key --lsign-key $gpg_key
+    - id: setup-manjaro-build-mirror
+      shell: bash
+      env:
+        BUILD_MIRROR: ${{ inputs.build-mirror }}
+      run: |
+        # configure pacman mirrors for the build
+        sudo pacman-mirrors -c all -B stable
+
+        if [ ! -z ${BUILD_MIRROR} ]; then
+          echo "## Using custom build mirror: ${BUILD_MIRROR}"
+          sudo pacman-mirrors -g -m ${BUILD_MIRROR}
+        else
+          sudo pacman-mirrors -g
+        fi
+
+        sudo pacman -Syy
+
+    - id: setup-additional-trusted-gpg
+      shell: bash
+      env:
+        TRUSTED_GPG: ${{ inputs.additional-trusted-gpg }}
+      run: |
+        if [ -z "${TRUSTED_GPG}" ]; then
+          echo "## no additional trusted gpg keys"
+          exit 0
+        fi
+        echo "## trusting ${TRUSTED_GPG}"
+        for key in ${TRUSTED_GPG}; do
+          sudo pacman-key --recv-keys ${key}
+          sudo pacman-key --lsign-key ${key}
         done
-    - id: install-arch-install-scripts
+
+    - id: patch-calamares-office-chooser
       shell: bash
       env:
-        VERSION: "27"
+        ENABLED: ${{ inputs.office-chooser }}
       run: |
-        sudo wget https://github.com/archlinux/arch-install-scripts/archive/refs/tags/v${VERSION}.tar.gz -O arch-install-scripts.tar.gz
-        sudo tar -xvf arch-install-scripts.tar.gz
-        sudo make -C arch-install-scripts-${VERSION}
-        sudo make -C arch-install-scripts-${VERSION} check
-        sudo make -C arch-install-scripts-${VERSION} PREFIX=/usr install
-        
-        sudo wget https://gitlab.manjaro.org/applications/pacman-mirrors/-/tree/master/data/etc/pacman-mirrors.conf -O /etc/pacman-mirrors.conf
-    - id: install-calamares-tools
-      shell: bash
-      run: |
-        sudo git clone --depth 1 https://gitlab.manjaro.org/applications/calamares-tools.git
-        
-        cd calamares-tools
-        sudo install -d /usr/share/calamares/
-        sudo cp -rv schemas/ /usr/share/calamares/
-    - id: install-mkinitcpio
-      shell: bash
-      env:
-        VERSION: "32"
-      run: |
-        sudo wget https://gitlab.archlinux.org/archlinux/mkinitcpio/mkinitcpio/-/archive/v${VERSION}/mkinitcpio-v${VERSION}.tar.gz
-        sudo tar -xf mkinitcpio-v${VERSION}.tar.gz
-        sudo make -C mkinitcpio-v${VERSION} install
-        sudo sed -i -e 's|File|Path|' /usr/share/libalpm/hooks/*hook
-    - id: install-manjaro-tools
-      shell: bash
-      env:
-        CUSTOM_REPO: ${{ inputs.custom-repo }}
-      run: |
-        sudo git clone --depth 1 \
-      --branch awesome-manjaro \
-      https://github.com/megvadulthangya/manjaro-tools.git
-        cd manjaro-tools
-        sudo make SYSCONFDIR=/etc PREFIX=/usr
-        sudo make SYSCONFDIR=/etc PREFIX=/usr install_base
-        sudo make SYSCONFDIR=/etc PREFIX=/usr install_yaml
-        sudo make SYSCONFDIR=/etc PREFIX=/usr install_iso
-        if [ ! -z ${CUSTOM_REPO} ]; then
-          echo "## adding repo [${CUSTOM_REPO}]"
-          sudo sed -i -e "s/\[core\]/\[${CUSTOM_REPO}\]\nSigLevel = PackageRequired\nInclude = \/etc\/pacman\.d\/mirrorlist\n\n\[core\]/" /usr/share/manjaro-tools/pacman-multilib.conf
+        if [ "${ENABLED}" != "true" ]; then
+          echo "## office chooser disabled"
+          exit 0
+        fi
+        # calamares-office-chooser depends on python-yaml
+        sudo pacman -S --noconfirm --needed python-yaml
+
+        # patch calamares modules.conf
+        FILE=./iso-profiles/shared/calamares/modules.conf
+        if [ -f "${FILE}" ]; then
+          echo "## enabling office chooser"
+          yq e '.sequence |= map( if . == "users" then "users\n- officechooser" else . end )' -i "${FILE}"
+        else
+          echo "## modules.conf not found"
         fi
 
-    - id: add-gshoots-repo
-      shell: bash
-      run: |
-        set -euo pipefail
-
-        REPO_NAME="manjaro-awesome"
-        REPO_SERVER='https://repo.gshoots.hu/$repo/$arch'
-        REPO_KEY_URL="https://repo.gshoots.hu/manjaro-awesome/x86_64/manjaro-awesome.pub"
-
-        echo "## adding repo [${REPO_NAME}] (gshoots) with priority above [extra]"
-
-        tmpkey="$(mktemp)"
-        wget -qO "${tmpkey}" "${REPO_KEY_URL}"
-
-        # Import + locally sign repo key so pacman trusts PackageRequired signatures
-        sudo pacman-key --add "${tmpkey}"
-        FPR="$(gpg --with-colons --import-options show-only --import "${tmpkey}" | awk -F: '$1=="fpr"{print $10; exit}')"
-        if [ -z "${FPR}" ]; then
-          echo "ERROR: Could not extract key fingerprint from ${REPO_KEY_URL}"
-          exit 1
-        fi
-        sudo pacman-key --lsign-key "${FPR}"
-        rm -f "${tmpkey}"
-
-        patch_conf() {
-          local conf="$1"
-          local tmp
-          tmp="$(mktemp)"
-
-          sudo awk -v repo="${REPO_NAME}" -v server="${REPO_SERVER}" '
-            function print_block() {
-              print "[" repo "]"
-              print "SigLevel = PackageRequired"
-              print "Server = " server
-              print ""
-            }
-            BEGIN { inserted=0; skipping=0 }
-            {
-              # Drop any existing [repo] block (to keep this step idempotent)
-              if ($0 == "[" repo "]") { skipping=1; next }
-              if (skipping == 1) {
-                if ($0 ~ /^\[[^\]]+\]$/) {
-                  skipping=0
-                  # fall through to process this header line
-                } else {
-                  next
-                }
-              }
-
-              # Insert our repo block immediately before [extra]
-              if ($0 == "[extra]" && inserted == 0) {
-                print_block()
-                inserted=1
-              }
-
-              print
-            }
-            END {
-              if (inserted == 0) {
-                print ""
-                print_block()
-              }
-            }
-          ' "${conf}" > "${tmp}"
-
-          sudo install -m0644 "${tmp}" "${conf}"
-          rm -f "${tmp}"
-        }
-
-        patch_conf /usr/share/manjaro-tools/pacman-multilib.conf
-        patch_conf /usr/share/manjaro-tools/pacman-default.conf
-    - id: checkout-iso-profiles
-      shell: bash
-      env:
-        REPO: ${{ inputs.iso-profiles-repo }}
-        BRANCH: ${{ inputs.iso-profiles-branch }}
-      run: sudo git clone ${BRANCH:+--branch ${BRANCH}} --depth 1 ${REPO} iso-profiles
-    - id: cleanup_space_workaround
-      shell: bash
-      run: |
-        sudo apt-get clean
-        sudo rm -rf /usr/share/dotnet
-        sudo rm -rf /opt/ghc
-        sudo rm -rf "/usr/local/share/boost"
-        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-    - id: image-build
+    - id: patch-iso-profiles
       shell: bash
       env:
         EDITION: ${{ inputs.edition }}
@@ -375,76 +390,139 @@ runs:
         VERSION: ${{ inputs.version }}
         KERNEL: ${{ inputs.kernel }}
         CODE_NAME: ${{ inputs.code-name }}
-        OFFICE: ${{ inputs.office-chooser }}
-        BUILD_MIRROR: ${{ inputs.build-mirror }}
+      run: |
+        # patch iso-profiles profile.conf
+        FILE=./iso-profiles/${EDITION}/profile.conf
+        if [ -f "${FILE}" ]; then
+          echo "## patching profile.conf"
+          if [ ! -z ${BRANCH} ]; then
+            sudo sed -i -e "s/^branch=.*/branch=${BRANCH}/" ${FILE}
+          fi
+          if [ ! -z ${SCOPE} ]; then
+            sudo sed -i -e "s/^scope=.*/scope=${SCOPE}/" ${FILE}
+          fi
+          if [ ! -z ${VERSION} ]; then
+            sudo sed -i -e "s/^version=.*/version=${VERSION}/" ${FILE}
+          fi
+          if [ ! -z ${KERNEL} ]; then
+            sudo sed -i -e "s/^kernel=.*/kernel=${KERNEL}/" ${FILE}
+          fi
+          if [ ! -z ${CODE_NAME} ]; then
+            sudo sed -i -e "s/^code_name=.*/code_name=${CODE_NAME}/" ${FILE}
+          fi
+        else
+          echo "## ${FILE} not found"
+          exit 1
+        fi
+
+    - id: image-build
+      shell: bash
+      env:
+        EDITION: ${{ inputs.edition }}
       run: |
         echo "## building iso"
-        [ "$SCOPE" == "minimal" ] && unset SCOPE && unset OFFICE
-        [ "$OFFICE" == "false" ] && unset OFFICE
+        sudo buildiso -p ${EDITION}
 
-        # source the version info from current release info
-        source <(curl -s https://gitlab.manjaro.org/packages/core/manjaro-release/-/raw/master/lsb-release)
-
-        sudo sed -i -e "s|dist_name=\$(get_distname)|dist_name=${DISTRIB_ID%Linux}|g" /usr/lib/manjaro-tools/util.sh
-        sudo sed -i -e 's|iso_name=$(get_osid)|iso_name=manjaro|g' /usr/lib/manjaro-tools/util.sh
-        sudo sed -i -e "s|dist_release=\$(get_release)|dist_release=${VERSION:-$DISTRIB_RELEASE}|g" /usr/lib/manjaro-tools/util.sh
-        sudo sed -i -e "s|dist_codename=\$(get_codename)|dist_codename=\"${CODE_NAME:-$DISTRIB_CODENAME}\"|g" /usr/lib/manjaro-tools/util.sh
-        sudo sed -i -e "s|build_mirror='https://mirror.easyname.at/manjaro'|build_mirror=\'${BUILD_MIRROR}\'|g" /usr/lib/manjaro-tools/util.sh
-        
-        sudo buildiso ${SCOPE:+-f} -p $EDITION -b $BRANCH -k $KERNEL ${OFFICE:+-o}
-
-        sudo rm -Rf /var/lib/manjaro-tools/buildiso/*
-        
-        OUTPUT_ISO_PATH=$(find /var/cache/manjaro-tools/iso -type f -name "*.iso" -exec stat -c '%Y %n' {} \; | sort -nr | awk 'NR==1 {print $2}')
-        TARGET_ISO_PATH=$(basename $OUTPUT_ISO_PATH)
-        mv $OUTPUT_ISO_PATH ./$TARGET_ISO_PATH
-        echo "file-path=$TARGET_ISO_PATH" >> $GITHUB_OUTPUT
-
-        FILE_PKG=$(find /var/cache/manjaro-tools/iso -type f -name "*-pkgs.txt" -exec stat -c '%Y %n' {} \; | sort -nr | awk 'NR==1 {print $2}')
-        mv $FILE_PKG ./${TARGET_ISO_PATH}.pkgs
-    - id: hash
-      shell: bash
-      run: |
-        echo "## calculating hashes"
-        sha1sum ${{ steps.image-build.outputs.file-path }} >${{ steps.image-build.outputs.file-path }}.sha1
-        sha256sum ${{ steps.image-build.outputs.file-path }} >${{ steps.image-build.outputs.file-path }}.sha256
-        sha512sum ${{ steps.image-build.outputs.file-path }} >${{ steps.image-build.outputs.file-path }}.sha512
-    - id: gpg_sign
-      shell: bash
-      run: |
-        # if is not yet supported in composite https://github.com/actions/runner/blob/main/docs/adrs/0549-composite-run-steps.md#if-condition
-        if [ -z "${{ inputs.gpg-secret-key-base64 }}" ]; then 
-          echo "## no gpg secret given"
-          exit 0
+        # find iso
+        ISO=$(ls -1t /var/cache/manjaro-tools/iso/*${EDITION}*.iso | head -n 1)
+        if [ -z "${ISO}" ]; then
+          echo "## ISO not found"
+          exit 1
         fi
-        echo "## gpg signing"
-        cat <(echo -e "${{ inputs.gpg-secret-key-base64 }}" | base64 --decode) | gpg --batch --import &>/dev/null
-        gpg --pinentry-mode loopback --passphrase "${{ inputs.gpg-passphrase }}" --detach-sign ./${{ steps.image-build.outputs.file-path }}
+
+        echo "file-path=${ISO}" >> $GITHUB_OUTPUT
+
     - id: upload-prepare
-      shell: bash -O extglob {0}
-      run: |
-        echo "## ssh setup"
-        mkdir -p /home/runner/.ssh
-        touch /home/runner/.ssh/github_actions
-        chmod 600 /home/runner/.ssh/github_actions
-        ssh-agent -a /tmp/ssh_agent.sock > /dev/null
-        echo "upload-files=./${{ steps.image-build.outputs.file-path }}+(|.sha*|.pkgs|.sig|.torrent)" >> $GITHUB_OUTPUT
-        mkdir -p ${{ inputs.edition }}/${{ inputs.version }}
-    - name: upload-sourceforge
-      shell: bash -O extglob {0}
+      shell: bash
       env:
-        SSH_AUTH_SOCK: /tmp/ssh_agent.sock
+        EDITION: ${{ inputs.edition }}
+        VERSION: ${{ inputs.version }}
+        ISO: ${{ steps.image-build.outputs.file-path }}
       run: |
-        # if is not yet supported in composite https://github.com/actions/runner/blob/main/docs/adrs/0549-composite-run-steps.md#if-condition
-        if [ -z "${{ inputs.sf-project }}" ] || [ -z "${{ inputs.sf-user }}" ] || [ -z "${{ inputs.sf-key }}" ]; then 
-          echo "## not (all) credentials given for sourceforge upload"
+        # determine version if not given
+        if [ -z "${VERSION}" ]; then
+          VERSION=$(ls -1t /var/cache/manjaro-tools/iso/*${EDITION}*.iso | head -n 1 | sed -e 's/.*-\([0-9\.]\+\)-.*/\1/')
+        fi
+
+        ISO_FILE=$(basename ${ISO})
+        ISO_DIR=$(dirname ${ISO})
+        FILES="${ISO}"
+
+        # checksums
+        pushd ${ISO_DIR}
+          sha256sum ${ISO_FILE} > ${ISO_FILE}.sha256
+          b2sum ${ISO_FILE} > ${ISO_FILE}.b2
+          FILES="${FILES} ${ISO_DIR}/${ISO_FILE}.sha256 ${ISO_DIR}/${ISO_FILE}.b2"
+        popd
+
+        # create torrent
+        mktorrent -v -a udp://tracker.opentrackr.org:1337 -l 21 \
+          -w "https://download.manjaro.org/${EDITION}/${VERSION}/${ISO_FILE}" \
+          -o ${ISO}.torrent ${ISO}
+        FILES="${FILES} ${ISO}.torrent"
+
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+        echo "iso-file=${ISO_FILE}" >> $GITHUB_OUTPUT
+        echo "upload-files=${FILES}" >> $GITHUB_OUTPUT
+
+    - id: sign-zip
+      shell: bash
+      env:
+        SECRET_KEY_B64: ${{ inputs.gpg-secret-key-base64 }}
+        PASSPHRASE: ${{ inputs.gpg-passphrase }}
+        ISO: ${{ steps.image-build.outputs.file-path }}
+      run: |
+        if [ -z "${SECRET_KEY_B64}" ]; then
+          echo "## no gpg key given - not signing"
           exit 0
         fi
+
+        echo "## importing gpg key"
+        echo "${SECRET_KEY_B64}" | base64 -d > /tmp/secret.key
+        gpg --batch --import /tmp/secret.key
+
+        echo "## signing zip"
+        zip -j ${ISO}.zip ${ISO}
+        gpg --batch --yes --pinentry-mode loopback --passphrase "${PASSPHRASE}" \
+          --output ${ISO}.zip.sig --detach-sign ${ISO}.zip
+
+    - id: upload-osdn
+      shell: bash -O extglob {0}
+      run: |
+        # if is not yet supported in composite https://github.com/actions/runner/blob/main/docs/adrs/0549-composite-run-steps.md#if-condition
+        if [ -z "${{ inputs.osdn-project }}" ]; then 
+          echo "## no OSDN project given"
+          exit 0
+        fi
+
+        echo "## OSDN upload"
+        mkdir -p ~/.ssh
+        echo "${{ inputs.osdn-key }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -t rsa storage.osdn.net >> ~/.ssh/known_hosts
+
+        ## create target dir
+        rsync -vaP --stats -e ssh ${{ inputs.edition }} \
+          ${{ inputs.osdn-user }}@storage.osdn.net:/storage/groups/m/ma/${{ inputs.osdn-project }}/
+
+        ## upload
+        rsync -vaP --stats -e ssh ${{ steps.upload-prepare.outputs.upload-files }} \
+          ${{ inputs.osdn-user }}@storage.osdn.net:/storage/groups/m/ma/${{ inputs.osdn-project }}/${{ inputs.edition }}/${{ inputs.version }}/
+
+    - id: upload-sourceforge
+      shell: bash -O extglob {0}
+      run: |
+        # if is not yet supported in composite https://github.com/actions/runner/blob/main/docs/adrs/0549-composite-run-steps.md#if-condition
+        if [ -z "${{ inputs.sf-project }}" ]; then 
+          echo "## no Sourceforge project given"
+          exit 0
+        fi
+
         echo "## sourceforge upload"
-        
-        ssh-keyscan -t rsa frs.sourceforge.net >> /home/runner/.ssh/known_hosts
-        echo "${{ inputs.sf-key }}" >> /home/runner/.ssh/github_actions
-        ssh-add /home/runner/.ssh/github_actions
+        mkdir -p ~/.ssh
+        echo "${{ inputs.sf-key }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -t rsa frs.sourceforge.net >> ~/.ssh/known_hosts
 
         ## create target dir
         rsync -vaP --stats -e ssh ${{ inputs.edition }} \
@@ -453,6 +531,7 @@ runs:
         ## upload
         rsync -vaP --stats -e ssh ${{ steps.upload-prepare.outputs.upload-files }} \
           ${{ inputs.sf-user }}@frs.sourceforge.net:/home/frs/project/${{ inputs.sf-project }}/${{ inputs.edition }}/${{ inputs.version }}/
+
     - id: upload-github-release
       shell: bash -O extglob {0}
       env:
@@ -477,11 +556,12 @@ runs:
         else
           # iso is too big - creating a split-zip
           zip -j -s ${LIMIT_MB}m ${{ steps.image-build.outputs.file-path }}.zip ${{ steps.image-build.outputs.file-path }}
-          
+
           REMOTE_FILES=$(find . -maxdepth 1 -name "*.z*" -exec basename {} \; | xargs -I{} echo "-w \"${GITHUB_LINK}/{}\"")
           gh release upload ${{ inputs.release-tag }} --repo ${{ github.repository }} --clobber \
             ./${{ steps.image-build.outputs.file-path }}+(.z*|.sha*|.pkgs|.sig|.torrent)
         fi
+
     - name: upload-cdn77-s3
       shell: bash -O extglob {0}
       run: |
