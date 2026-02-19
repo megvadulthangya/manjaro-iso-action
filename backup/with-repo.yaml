@@ -141,9 +141,6 @@ runs:
           rsync \
           sshfs \
           libglib2.0-dev \
-          libfuse2 \
-          fuse \
-          fuse3 \
           p7zip-full \
           imagemagick \
           gnupg \
