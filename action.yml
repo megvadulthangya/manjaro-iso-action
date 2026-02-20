@@ -208,7 +208,8 @@ runs:
             exit 1
           fi
 
-          topdir="$(tar -tf "${tmp_tar}" | head -n 1 | cut -d/ -f1)"
+          # FIX: ne használjunk head-et, mert SIGPIPE + pipefail miatt a tar exit 2-vel elhasal
+          topdir="$(tar -tf "${tmp_tar}" 2>/dev/null | sed -n '1p' | cut -d/ -f1)"
           if [ -z "${topdir}" ]; then
             echo "ERROR: Could not determine pacman source top directory from tarball"
             exit 1
