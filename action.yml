@@ -48,14 +48,14 @@ inputs:
     description: 'pacman version to build ("latest" to auto-detect)'
     required: false
     default: latest
-  pacman-release-page:
+  pacman-detect-urls:
     description: 'space separated fallback URLs used to resolve latest pacman version when pacman-version=latest (expects directory index with pacman-package-manager_<ver>.orig.tar.*)'
     required: false
-    default: "https://ftp.debian.org/debian/pool/main/p/pacman-package-manager/ https://ftp.ubuntu.com/ubuntu/pool/universe/p/pacman-package-manager/"
+    default: "https://ftp.ubuntu.com/ubuntu/pool/universe/p/pacman-package-manager/ https://ftp.debian.org/debian/pool/main/p/pacman-package-manager/"
   pacman-source-urls:
     description: 'space separated fallback URLs to download pacman source tarball; use {version} placeholder'
     required: false
-    default: "https://gitlab.archlinux.org/pacman/pacman/-/releases/v{version}/downloads/pacman-{version}.tar.xz https://ftp.debian.org/debian/pool/main/p/pacman-package-manager/pacman-package-manager_{version}.orig.tar.xz https://ftp.ubuntu.com/ubuntu/pool/universe/p/pacman-package-manager/pacman-package-manager_{version}.orig.tar.xz https://sources.archlinux.org/other/pacman/pacman-{version}.tar.xz"
+    default: "https://ftp.ubuntu.com/ubuntu/pool/universe/p/pacman-package-manager/pacman-package-manager_{version}.orig.tar.xz https://ftp.ubuntu.com/ubuntu/pool/universe/p/pacman-package-manager/pacman-package-manager_{version}.orig.tar.gz https://ftp.debian.org/debian/pool/main/p/pacman-package-manager/pacman-package-manager_{version}.orig.tar.xz https://ftp.debian.org/debian/pool/main/p/pacman-package-manager/pacman-package-manager_{version}.orig.tar.gz https://gitlab.archlinux.org/pacman/pacman/-/releases/v{version}/downloads/pacman-{version}.tar.xz https://sources.archlinux.org/other/pacman/pacman-{version}.tar.xz"
   archlinux-core-db-urls:
     description: 'space separated fallback URLs to Arch core.db (x86_64) used to resolve the latest archlinux-keyring package'
     required: false
@@ -150,7 +150,7 @@ runs:
       shell: bash
       env:
         PACMAN_VERSION: ${{ inputs.pacman-version }}
-        PACMAN_RELEASE_PAGE: ${{ inputs.pacman-release-page }}
+        PACMAN_DETECT_URLS: ${{ inputs.pacman-detect-urls }}
         PACMAN_SOURCE_URLS: ${{ inputs.pacman-source-urls }}
       run: |
         sudo git clone --depth 1 https://gitlab.manjaro.org/packages/core/pacman.git
@@ -160,18 +160,15 @@ runs:
           PACMAN_VER="${PACMAN_VERSION}"
           if [ -z "${PACMAN_VER}" ] || [ "${PACMAN_VER}" = "latest" ]; then
             echo "## pacman: resolving latest version"
-
             PACMAN_VER=""
-            DETECT_URLS="${PACMAN_RELEASE_PAGE}"
 
-            for u in ${DETECT_URLS}; do
+            for u in ${PACMAN_DETECT_URLS}; do
               echo "## pacman: detect from ${u}"
               idx="$(curl -fsSL -A "${UA}" "${u}" 2>/dev/null || true)"
               if [ -z "${idx}" ]; then
                 continue
               fi
 
-              # Look for pacman-package-manager_<ver>.orig.tar.*
               ver="$(printf '%s' "${idx}" \
                 | grep -Eo 'pacman-package-manager_[0-9]+\.[0-9]+\.[0-9]+\.orig\.tar\.(xz|gz|bz2)' \
                 | sed -E 's/^pacman-package-manager_([0-9]+\.[0-9]+\.[0-9]+)\.orig\.tar\..*$/\1/' \
@@ -186,7 +183,7 @@ runs:
             done
 
             if [ -z "${PACMAN_VER}" ]; then
-              echo "ERROR: Could not resolve latest pacman version from pacman-release-page URLs"
+              echo "ERROR: Could not resolve latest pacman version from pacman-detect-urls"
               exit 1
             fi
           fi
@@ -218,7 +215,6 @@ runs:
           fi
 
           sudo tar -xvf "${tmp_tar}"
-
           pushd "${topdir}"
             sudo meson --prefix=/usr \
                       --buildtype=plain \
@@ -251,9 +247,7 @@ runs:
 
         mkdir -p archlinux-keyring
         pushd archlinux-keyring
-          # temp solution until Arch infra gets fixed
-          #wget https://mirrors.manjaro.org/repo/pool/sync/archlinux-keyring-20260107-2-any.pkg.tar.zst -O /tmp/archlinux-keyring.tar.zst
-          # A központi archlinux.org helyett stabil mirror(ok) + core.db alapján dinamikus feloldás.
+          # mirror + core.db alapján dinamikus feloldás, fallback URL listával
           ARCH_CORE_DB_URLS="${{ inputs.archlinux-core-db-urls }}"
           UA="Mozilla/5.0"
 
