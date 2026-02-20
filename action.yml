@@ -49,9 +49,9 @@ inputs:
     required: false
     default: latest
   pacman-release-page:
-    description: 'URL used to resolve latest pacman version when pacman-version=latest'
+    description: 'space separated fallback URLs used to resolve latest pacman version when pacman-version=latest (expects directory index with pacman-package-manager_<ver>.orig.tar.*)'
     required: false
-    default: https://pacman.archlinux.page/
+    default: "https://ftp.debian.org/debian/pool/main/p/pacman-package-manager/ https://ftp.ubuntu.com/ubuntu/pool/universe/p/pacman-package-manager/"
   pacman-source-urls:
     description: 'space separated fallback URLs to download pacman source tarball; use {version} placeholder'
     required: false
@@ -160,22 +160,33 @@ runs:
           PACMAN_VER="${PACMAN_VERSION}"
           if [ -z "${PACMAN_VER}" ] || [ "${PACMAN_VER}" = "latest" ]; then
             echo "## pacman: resolving latest version"
-            page="$(curl -fsSL -A "${UA}" "${PACMAN_RELEASE_PAGE}" 2>/dev/null || true)"
-            if [ -n "${page}" ]; then
-              PACMAN_VER="$(printf '%s' "${page}" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -n 1 || true)"
-            fi
 
-            # fallback: Debian pool (if pacman.archlinux.page is unreachable)
-            if [ -z "${PACMAN_VER}" ]; then
-              echo "## pacman: fallback resolving from Debian pool index"
-              idx="$(curl -fsSL -A "${UA}" "https://ftp.debian.org/debian/pool/main/p/pacman-package-manager/" 2>/dev/null || true)"
-              PACMAN_VER="$(printf '%s' "${idx}" | grep -Eo 'pacman-package-manager_[0-9]+\.[0-9]+\.[0-9]+\.orig\.tar\.xz' \
-                | sed -E 's/^pacman-package-manager_([0-9]+\.[0-9]+\.[0-9]+)\.orig\.tar\.xz$/\1/' \
-                | sort -V | tail -n 1 || true)"
-            fi
+            PACMAN_VER=""
+            DETECT_URLS="${PACMAN_RELEASE_PAGE}"
+
+            for u in ${DETECT_URLS}; do
+              echo "## pacman: detect from ${u}"
+              idx="$(curl -fsSL -A "${UA}" "${u}" 2>/dev/null || true)"
+              if [ -z "${idx}" ]; then
+                continue
+              fi
+
+              # Look for pacman-package-manager_<ver>.orig.tar.*
+              ver="$(printf '%s' "${idx}" \
+                | grep -Eo 'pacman-package-manager_[0-9]+\.[0-9]+\.[0-9]+\.orig\.tar\.(xz|gz|bz2)' \
+                | sed -E 's/^pacman-package-manager_([0-9]+\.[0-9]+\.[0-9]+)\.orig\.tar\..*$/\1/' \
+                | sort -V \
+                | tail -n 1 \
+                || true)"
+
+              if [ -n "${ver}" ]; then
+                PACMAN_VER="${ver}"
+                break
+              fi
+            done
 
             if [ -z "${PACMAN_VER}" ]; then
-              echo "ERROR: Could not resolve latest pacman version"
+              echo "ERROR: Could not resolve latest pacman version from pacman-release-page URLs"
               exit 1
             fi
           fi
