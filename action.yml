@@ -232,6 +232,11 @@ runs:
           sudo install -m644 makepkg.conf /etc/
           sudo mkdir -p /etc/pacman.d
           sudo touch /etc/pacman.d/mirrorlist
+
+          # Ensure pacman DownloadUser exists on Ubuntu runner (pacman >= 7)
+          sudo install -dm755 /var/empty
+          getent group alpm >/dev/null 2>&1 || sudo groupadd -r alpm
+          id -u alpm >/dev/null 2>&1 || sudo useradd -r -g alpm -M -d /var/empty -s /usr/sbin/nologin alpm
         popd
 
     - id: install-keyrings
