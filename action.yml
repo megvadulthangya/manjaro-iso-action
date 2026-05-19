@@ -153,7 +153,22 @@ runs:
         PACMAN_DETECT_URLS: ${{ inputs.pacman-detect-urls }}
         PACMAN_SOURCE_URLS: ${{ inputs.pacman-source-urls }}
       run: |
-        sudo git clone --depth 1 https://gitlab.manjaro.org/packages/core/pacman.git
+        retry_git_clone() {
+          local max_attempts=5
+          local attempt=1
+          local delay=10
+          until sudo git clone --depth 1 "$@"; do
+            if [ $attempt -ge $max_attempts ]; then
+              echo "ERROR: git clone failed after $max_attempts attempts"
+              return 1
+            fi
+            echo "git clone failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..."
+            sleep $delay
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+        }
+        retry_git_clone https://gitlab.manjaro.org/packages/core/pacman.git
         pushd pacman
           UA="Mozilla/5.0"
 
@@ -242,9 +257,24 @@ runs:
     - id: install-keyrings
       shell: bash
       run: |
+        retry_git_clone() {
+          local max_attempts=5
+          local attempt=1
+          local delay=10
+          until sudo git clone --depth 1 "$@"; do
+            if [ $attempt -ge $max_attempts ]; then
+              echo "ERROR: git clone failed after $max_attempts attempts"
+              return 1
+            fi
+            echo "git clone failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..."
+            sleep $delay
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+        }
         sudo install -dm755 /usr/share/pacman/keyrings/
 
-        sudo git clone --depth 1 https://gitlab.manjaro.org/packages/core/manjaro-keyring.git
+        retry_git_clone https://gitlab.manjaro.org/packages/core/manjaro-keyring.git
         pushd manjaro-keyring
           sudo install -m0644 manjaro.gpg /usr/share/pacman/keyrings/
           sudo install -m0644 manjaro-trusted /usr/share/pacman/keyrings/
@@ -326,12 +356,27 @@ runs:
         sudo make -C arch-install-scripts-${VERSION} check
         sudo make -C arch-install-scripts-${VERSION} PREFIX=/usr install
 
-        sudo wget https://gitlab.manjaro.org/applications/pacman-mirrors/-/tree/master/data/etc/pacman-mirrors.conf -O /etc/pacman-mirrors.conf
+        sudo wget --tries=5 --retry-connrefused --waitretry=10 https://gitlab.manjaro.org/applications/pacman-mirrors/-/raw/master/data/etc/pacman-mirrors.conf -O /etc/pacman-mirrors.conf
 
     - id: install-calamares-tools
       shell: bash
       run: |
-        sudo git clone --depth 1 https://gitlab.manjaro.org/applications/calamares-tools.git
+        retry_git_clone() {
+          local max_attempts=5
+          local attempt=1
+          local delay=10
+          until sudo git clone --depth 1 "$@"; do
+            if [ $attempt -ge $max_attempts ]; then
+              echo "ERROR: git clone failed after $max_attempts attempts"
+              return 1
+            fi
+            echo "git clone failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..."
+            sleep $delay
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+        }
+        retry_git_clone https://gitlab.manjaro.org/applications/calamares-tools.git
 
         cd calamares-tools
         sudo install -d /usr/share/calamares/
@@ -398,7 +443,7 @@ runs:
         [ "$OFFICE" == "false" ] && unset OFFICE
 
         # source the version info from current release info
-        source <(curl -s https://gitlab.manjaro.org/packages/core/manjaro-release/-/raw/master/lsb-release)
+        source <(curl --retry 5 --retry-delay 10 --retry-connrefused -s https://gitlab.manjaro.org/packages/core/manjaro-release/-/raw/master/lsb-release)
 
         sudo sed -i -e "s|dist_name=\$(get_distname)|dist_name=${DISTRIB_ID%Linux}|g" /usr/lib/manjaro-tools/util.sh
         sudo sed -i -e 's|iso_name=$(get_osid)|iso_name=manjaro|g' /usr/lib/manjaro-tools/util.sh
