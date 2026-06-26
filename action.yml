@@ -428,6 +428,8 @@ runs:
         sudo mv iso-profiles/* iso-profiles/.[!.]* .  2>/dev/null || true
         # Ha maradna üres iso-profiles mappa, töröljük
         sudo rmdir iso-profiles 2>/dev/null || true
+        # Jogosultságok visszaállítása a runner felhasználónak
+        sudo chown -R runner:docker "$GITHUB_WORKSPACE"
 
     - id: cleanup_space_workaround
       shell: bash
