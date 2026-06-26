@@ -421,8 +421,8 @@ runs:
       shell: bash
       run: |
         echo "## workspace csere az iso-profiles repo-ra (teljes git történettel)"
-        # Töröljük a jelenlegi workspace teljes tartalmát, beleértve a .git-et is
-        sudo find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+        # Töröljük a jelenlegi workspace tartalmát, kivéve az iso-profiles mappát
+        sudo find . -mindepth 1 -maxdepth 1 ! -name iso-profiles -exec rm -rf {} +
         # Átmozgatjuk az iso-profiles MINDEN tartalmát (a .git-et is!) a gyökérbe
         for item in iso-profiles/* iso-profiles/.[!.]* iso-profiles/..?*; do
           [ -e "$item" ] || continue
@@ -430,7 +430,7 @@ runs:
         done
         # Töröljük az immár üres iso-profiles mappát
         sudo rmdir iso-profiles 2>/dev/null || sudo rm -rf iso-profiles
-        # Jogosultságok visszaállítása a runner felhasználónak
+        # Jogosultságok visszaállítása
         sudo chown -R runner:docker "$GITHUB_WORKSPACE"
 
     - id: cleanup_space_workaround
