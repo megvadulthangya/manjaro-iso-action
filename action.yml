@@ -410,28 +410,22 @@ runs:
           sudo sed -i -e "s/\[core\]/\[${CUSTOM_REPO}\]\nSigLevel = PackageRequired\nInclude = \/etc\/pacman\.d\/mirrorlist\n\n\[core\]/" /usr/share/manjaro-tools/pacman-multilib.conf
         fi
 
-    - id: checkout-iso-profiles
+    - id: setup-iso-profiles-repo
       shell: bash
       env:
         REPO: ${{ inputs.iso-profiles-repo }}
         BRANCH: ${{ inputs.iso-profiles-branch }}
-      run: sudo git clone ${BRANCH:+--branch ${BRANCH}} --depth 1 ${REPO} iso-profiles
-    
-    - id: replace-workspace-with-profiles
-      shell: bash
       run: |
-        echo "## workspace csere az iso-profiles repo-ra (teljes git történettel)"
-        # Töröljük a jelenlegi workspace tartalmát, kivéve az iso-profiles mappát
-        sudo find . -mindepth 1 -maxdepth 1 ! -name iso-profiles -exec rm -rf {} +
-        # Átmozgatjuk az iso-profiles MINDEN tartalmát (a .git-et is!) a gyökérbe
-        for item in iso-profiles/* iso-profiles/.[!.]* iso-profiles/..?*; do
-          [ -e "$item" ] || continue
-          sudo mv "$item" .
-        done
-        # Töröljük az immár üres iso-profiles mappát
-        sudo rmdir iso-profiles 2>/dev/null || sudo rm -rf iso-profiles
-        # Jogosultságok visszaállítása
-        sudo chown -R runner:docker "$GITHUB_WORKSPACE"
+        echo "## Cloning iso-profiles with full history and making it the workspace repo"
+        # 1. Teljes előzménnyel klónozás egy ideiglenes mappába
+        sudo git clone --branch "${BRANCH}" "${REPO}" iso-profiles-tmp
+        # 2. Mentsük meg a .git-et a gyökérbe (felülírva a meglévőt, ami az action saját repója)
+        sudo rm -rf .git
+        sudo mv iso-profiles-tmp/.git .git
+        # 3. A maradék tartalmat (profilok) nevezzük át iso-profiles-re, ez kell a build-hez
+        sudo mv iso-profiles-tmp iso-profiles
+        # 4. Jogosultságok: a runner legyen tulajdonos, hogy minden lépés írhasson
+        sudo chown -R runner:docker .git iso-profiles "$GITHUB_WORKSPACE"
 
     - id: cleanup_space_workaround
       shell: bash
@@ -490,7 +484,6 @@ runs:
     - id: gpg_sign
       shell: bash
       run: |
-        # if is not yet supported in composite https://github.com/actions/runner/blob/main/docs/adrs/0549-composite-run-steps.md#if-condition
         if [ -z "${{ inputs.gpg-secret-key-base64 }}" ]; then
           echo "## no gpg secret given"
           exit 0
@@ -515,7 +508,6 @@ runs:
       env:
         SSH_AUTH_SOCK: /tmp/ssh_agent.sock
       run: |
-        # if is not yet supported in composite https://github.com/actions/runner/blob/main/docs/adrs/0549-composite-run-steps.md#if-condition
         if [ -z "${{ inputs.sf-project }}" ] || [ -z "${{ inputs.sf-user }}" ] || [ -z "${{ inputs.sf-key }}" ]; then
           echo "## not (all) credentials given for sourceforge upload"
           exit 0
@@ -539,7 +531,6 @@ runs:
       env:
         LIMIT_MB: '2000'
       run: |
-        # if is not yet supported in composite https://github.com/actions/runner/blob/main/docs/adrs/0549-composite-run-steps.md#if-condition
         if [ -z "${{ inputs.release-tag }}" ]; then
           echo "## no release tag given"
           exit 0
@@ -552,11 +543,9 @@ runs:
         GITHUB_LINK=https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ inputs.release-tag }}
 
         if [[ -z "$(du --threshold=${LIMIT_MB}M ${{ steps.image-build.outputs.file-path }})" ]]; then
-          # iso is small enough to upload already
           gh release upload ${{ inputs.release-tag }} --repo ${{ github.repository }} --clobber \
             ${{ steps.upload-prepare.outputs.upload-files }}
         else
-          # iso is too big - creating a split-zip
           zip -j -s ${LIMIT_MB}m ${{ steps.image-build.outputs.file-path }}.zip ${{ steps.image-build.outputs.file-path }}
 
           REMOTE_FILES=$(find . -maxdepth 1 -name "*.z*" -exec basename {} \; | xargs -I{} echo "-w \"${GITHUB_LINK}/{}\"")
@@ -567,7 +556,6 @@ runs:
     - name: upload-cdn77-s3
       shell: bash -O extglob {0}
       run: |
-        # if is not yet supported in composite https://github.com/actions/runner/blob/main/docs/adrs/0549-composite-run-steps.md#if-condition
         if [ -z "${{ inputs.s3-cfg }}" ]; then
           echo "## credentials for cdn77 S3 upload not provided. Skipping."
           exit 0
@@ -579,12 +567,9 @@ runs:
           -o ${{ steps.image-build.outputs.file-path }}.torrent ${{ steps.image-build.outputs.file-path }}
 
         echo "## cdn77 S3 upload"
-        # copy config
         echo "${{ inputs.s3-cfg }}" > /home/runner/.s3cfg
-        # create bash array and mv files to dir
         upload_files=( "${{ steps.upload-prepare.outputs.upload-files }}" )
         for f in ${upload_files[@]}; do
           mv ${f} "${{ inputs.edition }}/${{ inputs.version }}/"
         done
-        # upload
         s3cmd sync --progress --recursive -F "${{ inputs.edition }}" s3://s3downloadseu/
