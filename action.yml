@@ -416,19 +416,27 @@ runs:
         REPO: ${{ inputs.iso-profiles-repo }}
         BRANCH: ${{ inputs.iso-profiles-branch }}
       run: sudo git clone ${BRANCH:+--branch ${BRANCH}} --depth 1 ${REPO} iso-profiles
-    
+
     - id: replace-workspace-with-profiles
       shell: bash
       run: |
-        echo "## workspace csere a kívánt branch tartalmára"
-        # Töröljük a jelenlegi workspace tartalmát (kivéve a frissen klónozott iso-profiles mappát)
-        sudo find . -mindepth 1 -maxdepth 1 ! -name iso-profiles -exec rm -rf {} +
-        # Átmozgatjuk a klónozott branch teljes tartalmát a workspace gyökerébe
-        # (beleértve a rejtett fájlokat is, ha vannak)
-        sudo mv iso-profiles/* iso-profiles/.[!.]* .  2>/dev/null || true
-        # Ha maradna üres iso-profiles mappa, töröljük
-        sudo rmdir iso-profiles 2>/dev/null || true
-        # Jogosultságok visszaállítása a runner felhasználónak
+        echo "## workspace csere a kívánt branch tartalmára (eredeti .git megőrzésével)"
+        # Töröljünk mindent, kivéve a .git-et és az iso-profiles mappát
+        sudo find . -mindepth 1 -maxdepth 1 ! -name '.git' ! -name 'iso-profiles' -exec rm -rf {} +
+        
+        # Mozgassuk át az iso-profiles tartalmát a gyökérbe, de a .git-et ne
+        for item in iso-profiles/* iso-profiles/.[!.]*; do
+          [ -e "$item" ] || continue
+          base="$(basename "$item")"
+          if [ "$base" != ".git" ]; then
+            sudo mv "$item" .
+          fi
+        done
+        
+        # Töröljük az üres iso-profiles mappát (ha a .git is benne maradt, azt is törölhetjük)
+        sudo rm -rf iso-profiles
+        
+        # Jogosultságok visszaállítása
         sudo chown -R runner:docker "$GITHUB_WORKSPACE"
 
     - id: cleanup_space_workaround
