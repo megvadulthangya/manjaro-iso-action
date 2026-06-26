@@ -416,6 +416,18 @@ runs:
         REPO: ${{ inputs.iso-profiles-repo }}
         BRANCH: ${{ inputs.iso-profiles-branch }}
       run: sudo git clone ${BRANCH:+--branch ${BRANCH}} --depth 1 ${REPO} iso-profiles
+    
+    - id: replace-workspace-with-profiles
+      shell: bash
+      run: |
+        echo "## workspace csere a kívánt branch tartalmára"
+        # Töröljük a jelenlegi workspace tartalmát (kivéve a frissen klónozott iso-profiles mappát)
+        sudo find . -mindepth 1 -maxdepth 1 ! -name iso-profiles -exec rm -rf {} +
+        # Átmozgatjuk a klónozott branch teljes tartalmát a workspace gyökerébe
+        # (beleértve a rejtett fájlokat is, ha vannak)
+        sudo mv iso-profiles/* iso-profiles/.[!.]* .  2>/dev/null || true
+        # Ha maradna üres iso-profiles mappa, töröljük
+        sudo rmdir iso-profiles 2>/dev/null || true
 
     - id: cleanup_space_workaround
       shell: bash
@@ -451,9 +463,8 @@ runs:
         sudo sed -i -e "s|dist_codename=\$(get_codename)|dist_codename=\"${CODE_NAME:-$DISTRIB_CODENAME}\"|g" /usr/lib/manjaro-tools/util.sh
         sudo sed -i -e "s|build_mirror='https://mirror.easyname.at/manjaro'|build_mirror=\'${BUILD_MIRROR}\'|g" /usr/lib/manjaro-tools/util.sh
 
-        #sudo buildiso ${SCOPE:+-f} -p $EDITION -b $BRANCH -k $KERNEL ${OFFICE:+-o}
-        sudo buildiso -D iso-profiles ${SCOPE:+-f} -p $EDITION -b $BRANCH -k $KERNEL ${OFFICE:+-o}
-
+        sudo buildiso ${SCOPE:+-f} -p $EDITION -b $BRANCH -k $KERNEL ${OFFICE:+-o}
+        
         sudo rm -Rf /var/lib/manjaro-tools/buildiso/*
 
         OUTPUT_ISO_PATH=$(find /var/cache/manjaro-tools/iso -type f -name "*.iso" -exec stat -c '%Y %n' {} \; | sort -nr | awk 'NR==1 {print $2}')
