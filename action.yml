@@ -416,16 +416,19 @@ runs:
         REPO: ${{ inputs.iso-profiles-repo }}
         BRANCH: ${{ inputs.iso-profiles-branch }}
       run: |
-        echo "## Cloning iso-profiles with full history and making it the workspace repo"
+        echo "## Cloning iso-profiles with full history and placing at workspace root"
         # 1. Teljes előzménnyel klónozás egy ideiglenes mappába
         sudo git clone --branch "${BRANCH}" "${REPO}" iso-profiles-tmp
-        # 2. Mentsük meg a .git-et a gyökérbe (felülírva a meglévőt, ami az action saját repója)
-        sudo rm -rf .git
-        sudo mv iso-profiles-tmp/.git .git
-        # 3. A maradék tartalmat (profilok) nevezzük át iso-profiles-re, ez kell a build-hez
-        sudo mv iso-profiles-tmp iso-profiles
-        # 4. Jogosultságok: a runner legyen tulajdonos, hogy minden lépés írhasson
-        sudo chown -R runner:docker .git iso-profiles "$GITHUB_WORKSPACE"
+        # 2. A workspace teljes tartalmának törlése (kivéve az imént klónozott mappát)
+        sudo find . -mindepth 1 -maxdepth 1 ! -name iso-profiles-tmp -exec rm -rf {} +
+        # 3. A klónozott tartalom áthelyezése a gyökérbe (profilok, .git, stb.)
+        shopt -s dotglob
+        sudo mv iso-profiles-tmp/* .  2>/dev/null || true
+        shopt -u dotglob
+        # 4. Az üres ideiglenes mappa törlése
+        sudo rmdir iso-profiles-tmp
+        # 5. Jogosultságok: a runner írhassa a workspace-t
+        sudo chown -R runner:docker "$GITHUB_WORKSPACE"
 
     - id: cleanup_space_workaround
       shell: bash
