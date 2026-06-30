@@ -51,7 +51,7 @@ inputs:
   pacman-detect-urls:
     description: 'space separated fallback URLs used to resolve latest pacman version when pacman-version=latest (expects directory index with pacman-package-manager_<ver>.orig.tar.*)'
     required: false
-    default: "https://ftp.ubuntu.com/ubuntu/pool/universe/p/pacman-package-manager/ https://ftp.debian.org/debian/pool/main/p/pacman-package-manager/"
+    default: "https://ftp.debian.org/debian/pool/main/p/pacman-package-manager/ https://ftp.ubuntu.com/ubuntu/pool/universe/p/pacman-package-manager/"
   pacman-source-urls:
     description: 'space separated fallback URLs to download pacman source tarball; use {version} placeholder'
     required: false
@@ -188,6 +188,8 @@ runs:
           local max_attempts=5
           local attempt=1
           local delay=10
+          # Remove target file to avoid protected_regular blocking root write
+          sudo rm -f "$output"
           while [ $attempt -le $max_attempts ]; do
             if sudo wget --timeout=30 -O "$output" "$@" "$url"; then
               return 0
@@ -259,7 +261,7 @@ runs:
 
           dl_ok=0
           tmp_tar="/tmp/pacman-src.tar.xz"
-          rm -f "${tmp_tar}"
+          sudo rm -f "${tmp_tar}"
 
           for tmpl in ${PACMAN_SOURCE_URLS}; do
             url="${tmpl//\{version\}/${PACMAN_VER}}"
@@ -335,6 +337,8 @@ runs:
           local max_attempts=5
           local attempt=1
           local delay=10
+          # Remove target file to avoid protected_regular blocking root write
+          sudo rm -f "$output"
           while [ $attempt -le $max_attempts ]; do
             if sudo wget --timeout=30 -O "$output" "$@" "$url"; then
               return 0
@@ -434,6 +438,8 @@ runs:
           local max_attempts=5
           local attempt=1
           local delay=10
+          # Remove target file to avoid protected_regular blocking root write
+          sudo rm -f "$output"
           while [ $attempt -le $max_attempts ]; do
             if sudo wget --timeout=30 -O "$output" "$@" "$url"; then
               return 0
@@ -499,6 +505,8 @@ runs:
           local max_attempts=5
           local attempt=1
           local delay=10
+          # Remove target file to avoid protected_regular blocking root write
+          sudo rm -f "$output"
           while [ $attempt -le $max_attempts ]; do
             if sudo wget --timeout=30 -O "$output" "$@" "$url"; then
               return 0
