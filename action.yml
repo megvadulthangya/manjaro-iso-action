@@ -153,6 +153,10 @@ runs:
         PACMAN_DETECT_URLS: ${{ inputs.pacman-detect-urls }}
         PACMAN_SOURCE_URLS: ${{ inputs.pacman-source-urls }}
       run: |
+        # Strip carriage returns that break URL iteration (Windows line endings)
+        PACMAN_DETECT_URLS="${PACMAN_DETECT_URLS//$'\r'/}"
+        PACMAN_SOURCE_URLS="${PACMAN_SOURCE_URLS//$'\r'/}"
+
         retry_git_clone() {
           local max_attempts=5
           local attempt=1
