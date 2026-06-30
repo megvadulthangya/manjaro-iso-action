@@ -366,8 +366,9 @@ runs:
           ARCH_CORE_DB_URLS="${{ inputs.archlinux-core-db-urls }}"
           UA="Mozilla/5.0"
 
-          tmpdb="$(mktemp)"
-          tmpdesc="$(mktemp)"
+          # Create temp files owned by root to avoid protected_regular issues
+          tmpdb="$(sudo mktemp)"
+          tmpdesc="$(sudo mktemp)"
           pkgfile=""
 
           for dburl in ${ARCH_CORE_DB_URLS}; do
