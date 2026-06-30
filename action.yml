@@ -168,6 +168,46 @@ runs:
             attempt=$((attempt + 1))
           done
         }
+
+        retry_wget() {
+          local output="$1"
+          local url="$2"
+          shift 2
+          local max_attempts=5
+          local attempt=1
+          local delay=10
+          while [ $attempt -le $max_attempts ]; do
+            if sudo wget --timeout=30 -O "$output" "$@" "$url"; then
+              return 0
+            fi
+            echo "wget failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..."
+            sleep $delay
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+          echo "ERROR: wget failed after $max_attempts attempts"
+          return 1
+        }
+
+        retry_curl() {
+          local url="$1"
+          shift
+          local max_attempts=5
+          local attempt=1
+          local delay=10
+          while [ $attempt -le $max_attempts ]; do
+            if curl --retry 5 --retry-delay 10 --retry-connrefused -fsSL "$@" "$url"; then
+              return 0
+            fi
+            echo "curl failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..."
+            sleep $delay
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+          echo "ERROR: curl failed after $max_attempts attempts"
+          return 1
+        }
+
         retry_git_clone https://gitlab.manjaro.org/packages/core/pacman.git
         pushd pacman
           UA="Mozilla/5.0"
@@ -179,7 +219,7 @@ runs:
 
             for u in ${PACMAN_DETECT_URLS}; do
               echo "## pacman: detect from ${u}"
-              idx="$(curl -fsSL -A "${UA}" "${u}" 2>/dev/null || true)"
+              idx="$(retry_curl "${u}" -A "${UA}" 2>/dev/null || true)"
               if [ -z "${idx}" ]; then
                 continue
               fi
@@ -212,7 +252,7 @@ runs:
           for tmpl in ${PACMAN_SOURCE_URLS}; do
             url="${tmpl//\{version\}/${PACMAN_VER}}"
             echo "## pacman: trying ${url}"
-            if sudo wget --user-agent="${UA}" -qO "${tmp_tar}" "${url}"; then
+            if retry_wget "${tmp_tar}" "${url}" --user-agent="${UA}" -q; then
               dl_ok=1
               break
             fi
@@ -223,7 +263,6 @@ runs:
             exit 1
           fi
 
-          # FIX: ne használjunk head-et, mert SIGPIPE + pipefail miatt a tar exit 2-vel elhasal
           topdir="$(tar -tf "${tmp_tar}" 2>/dev/null | sed -n '1p' | cut -d/ -f1)"
           if [ -z "${topdir}" ]; then
             echo "ERROR: Could not determine pacman source top directory from tarball"
@@ -272,6 +311,27 @@ runs:
             attempt=$((attempt + 1))
           done
         }
+
+        retry_wget() {
+          local output="$1"
+          local url="$2"
+          shift 2
+          local max_attempts=5
+          local attempt=1
+          local delay=10
+          while [ $attempt -le $max_attempts ]; do
+            if sudo wget --timeout=30 -O "$output" "$@" "$url"; then
+              return 0
+            fi
+            echo "wget failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..."
+            sleep $delay
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+          echo "ERROR: wget failed after $max_attempts attempts"
+          return 1
+        }
+
         sudo install -dm755 /usr/share/pacman/keyrings/
 
         retry_git_clone https://gitlab.manjaro.org/packages/core/manjaro-keyring.git
@@ -283,7 +343,6 @@ runs:
 
         mkdir -p archlinux-keyring
         pushd archlinux-keyring
-          # mirror + core.db alapján dinamikus feloldás, fallback URL listával
           ARCH_CORE_DB_URLS="${{ inputs.archlinux-core-db-urls }}"
           UA="Mozilla/5.0"
 
@@ -291,10 +350,9 @@ runs:
           tmpdesc="$(mktemp)"
           pkgfile=""
 
-          # Resolve latest package filename from the first reachable core.db
           for dburl in ${ARCH_CORE_DB_URLS}; do
             echo "## archlinux-keyring: trying core.db ${dburl}"
-            if wget --user-agent="${UA}" -qO "${tmpdb}" "${dburl}"; then
+            if retry_wget "${tmpdb}" "${dburl}" --user-agent="${UA}" -q; then
               entry="$(bsdtar -tf "${tmpdb}" 2>/dev/null | grep -E '^archlinux-keyring-[^/]+/desc$' | head -n 1 || true)"
               if [ -n "${entry}" ]; then
                 bsdtar -xOf "${tmpdb}" "${entry}" > "${tmpdesc}" 2>/dev/null || true
@@ -312,13 +370,12 @@ runs:
             exit 1
           fi
 
-          # Download package from any configured mirror (same directory as core.db)
           dl_ok=0
           for dburl in ${ARCH_CORE_DB_URLS}; do
             base="${dburl%/*}"
             pkgurl="${base}/${pkgfile}"
             echo "## archlinux-keyring: trying package ${pkgurl}"
-            if wget --user-agent="${UA}" -qO /tmp/archlinux-keyring.tar.zst "${pkgurl}"; then
+            if retry_wget "/tmp/archlinux-keyring.tar.zst" "${pkgurl}" --user-agent="${UA}" -q; then
               dl_ok=1
               break
             fi
@@ -350,13 +407,33 @@ runs:
       env:
         VERSION: "27"
       run: |
-        sudo wget https://github.com/archlinux/arch-install-scripts/archive/refs/tags/v${VERSION}.tar.gz -O arch-install-scripts.tar.gz
+        retry_wget() {
+          local output="$1"
+          local url="$2"
+          shift 2
+          local max_attempts=5
+          local attempt=1
+          local delay=10
+          while [ $attempt -le $max_attempts ]; do
+            if sudo wget --timeout=30 -O "$output" "$@" "$url"; then
+              return 0
+            fi
+            echo "wget failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..."
+            sleep $delay
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+          echo "ERROR: wget failed after $max_attempts attempts"
+          return 1
+        }
+
+        retry_wget arch-install-scripts.tar.gz "https://github.com/archlinux/arch-install-scripts/archive/refs/tags/v${VERSION}.tar.gz"
         sudo tar -xvf arch-install-scripts.tar.gz
         sudo make -C arch-install-scripts-${VERSION}
         sudo make -C arch-install-scripts-${VERSION} check
         sudo make -C arch-install-scripts-${VERSION} PREFIX=/usr install
 
-        sudo wget --tries=5 --retry-connrefused --waitretry=10 https://gitlab.manjaro.org/applications/pacman-mirrors/-/raw/master/data/etc/pacman-mirrors.conf -O /etc/pacman-mirrors.conf
+        retry_wget /etc/pacman-mirrors.conf "https://gitlab.manjaro.org/applications/pacman-mirrors/-/raw/master/data/etc/pacman-mirrors.conf"
 
     - id: install-calamares-tools
       shell: bash
@@ -387,7 +464,27 @@ runs:
       env:
         VERSION: "32"
       run: |
-        sudo wget https://gitlab.archlinux.org/archlinux/mkinitcpio/mkinitcpio/-/archive/v${VERSION}/mkinitcpio-v${VERSION}.tar.gz
+        retry_wget() {
+          local output="$1"
+          local url="$2"
+          shift 2
+          local max_attempts=5
+          local attempt=1
+          local delay=10
+          while [ $attempt -le $max_attempts ]; do
+            if sudo wget --timeout=30 -O "$output" "$@" "$url"; then
+              return 0
+            fi
+            echo "wget failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..."
+            sleep $delay
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+          echo "ERROR: wget failed after $max_attempts attempts"
+          return 1
+        }
+
+        retry_wget mkinitcpio-v${VERSION}.tar.gz "https://gitlab.archlinux.org/archlinux/mkinitcpio/mkinitcpio/-/archive/v${VERSION}/mkinitcpio-v${VERSION}.tar.gz"
         sudo tar -xf mkinitcpio-v${VERSION}.tar.gz
         sudo make -C mkinitcpio-v${VERSION} install
         sudo sed -i -e 's|File|Path|' /usr/share/libalpm/hooks/*hook
@@ -417,17 +514,12 @@ runs:
         BRANCH: ${{ inputs.iso-profiles-branch }}
       run: |
         echo "## Cloning iso-profiles with full history and placing at workspace root"
-        # 1. Teljes előzménnyel klónozás egy ideiglenes mappába
         sudo git clone --branch "${BRANCH}" "${REPO}" iso-profiles-tmp
-        # 2. A workspace teljes tartalmának törlése (kivéve az imént klónozott mappát)
         sudo find . -mindepth 1 -maxdepth 1 ! -name iso-profiles-tmp -exec rm -rf {} +
-        # 3. A klónozott tartalom áthelyezése a gyökérbe (profilok, .git, stb.)
         shopt -s dotglob
         sudo mv iso-profiles-tmp/* .  2>/dev/null || true
         shopt -u dotglob
-        # 4. Az üres ideiglenes mappa törlése
         sudo rmdir iso-profiles-tmp
-        # 5. Jogosultságok: a runner írhassa a workspace-t
         sudo chown -R runner:docker "$GITHUB_WORKSPACE"
 
     - id: cleanup_space_workaround
