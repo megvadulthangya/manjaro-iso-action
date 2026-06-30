@@ -159,10 +159,10 @@ runs:
           local delay=10
           until sudo git clone --depth 1 "$@"; do
             if [ $attempt -ge $max_attempts ]; then
-              echo "ERROR: git clone failed after $max_attempts attempts"
+              echo "ERROR: git clone failed after $max_attempts attempts" >&2
               return 1
             fi
-            echo "git clone failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..."
+            echo "git clone failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
             sleep $delay
             delay=$((delay * 2))
             attempt=$((attempt + 1))
@@ -180,12 +180,12 @@ runs:
             if sudo wget --timeout=30 -O "$output" "$@" "$url"; then
               return 0
             fi
-            echo "wget failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..."
+            echo "wget failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
             sleep $delay
             delay=$((delay * 2))
             attempt=$((attempt + 1))
           done
-          echo "ERROR: wget failed after $max_attempts attempts"
+          echo "ERROR: wget failed after $max_attempts attempts" >&2
           return 1
         }
 
@@ -199,12 +199,12 @@ runs:
             if curl --retry 5 --retry-delay 10 --retry-connrefused -fsSL "$@" "$url"; then
               return 0
             fi
-            echo "curl failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..."
+            echo "curl failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
             sleep $delay
             delay=$((delay * 2))
             attempt=$((attempt + 1))
           done
-          echo "ERROR: curl failed after $max_attempts attempts"
+          echo "ERROR: curl failed after $max_attempts attempts" >&2
           return 1
         }
 
@@ -238,7 +238,7 @@ runs:
             done
 
             if [ -z "${PACMAN_VER}" ]; then
-              echo "ERROR: Could not resolve latest pacman version from pacman-detect-urls"
+              echo "ERROR: Could not resolve latest pacman version from pacman-detect-urls" >&2
               exit 1
             fi
           fi
@@ -259,13 +259,13 @@ runs:
           done
 
           if [ "${dl_ok}" -ne 1 ]; then
-            echo "ERROR: Could not download pacman source tarball for ${PACMAN_VER}"
+            echo "ERROR: Could not download pacman source tarball for ${PACMAN_VER}" >&2
             exit 1
           fi
 
           topdir="$(tar -tf "${tmp_tar}" 2>/dev/null | sed -n '1p' | cut -d/ -f1)"
           if [ -z "${topdir}" ]; then
-            echo "ERROR: Could not determine pacman source top directory from tarball"
+            echo "ERROR: Could not determine pacman source top directory from tarball" >&2
             exit 1
           fi
 
@@ -302,10 +302,10 @@ runs:
           local delay=10
           until sudo git clone --depth 1 "$@"; do
             if [ $attempt -ge $max_attempts ]; then
-              echo "ERROR: git clone failed after $max_attempts attempts"
+              echo "ERROR: git clone failed after $max_attempts attempts" >&2
               return 1
             fi
-            echo "git clone failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..."
+            echo "git clone failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
             sleep $delay
             delay=$((delay * 2))
             attempt=$((attempt + 1))
@@ -323,12 +323,12 @@ runs:
             if sudo wget --timeout=30 -O "$output" "$@" "$url"; then
               return 0
             fi
-            echo "wget failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..."
+            echo "wget failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
             sleep $delay
             delay=$((delay * 2))
             attempt=$((attempt + 1))
           done
-          echo "ERROR: wget failed after $max_attempts attempts"
+          echo "ERROR: wget failed after $max_attempts attempts" >&2
           return 1
         }
 
@@ -366,7 +366,7 @@ runs:
           done
 
           if [ -z "${pkgfile}" ]; then
-            echo "ERROR: Could not resolve latest archlinux-keyring from core.db"
+            echo "ERROR: Could not resolve latest archlinux-keyring from core.db" >&2
             exit 1
           fi
 
@@ -384,7 +384,7 @@ runs:
           rm -f "${tmpdb}" "${tmpdesc}"
 
           if [ "${dl_ok}" -ne 1 ]; then
-            echo "ERROR: Could not download ${pkgfile} from configured mirrors"
+            echo "ERROR: Could not download ${pkgfile} from configured mirrors" >&2
             exit 1
           fi
 
@@ -418,12 +418,12 @@ runs:
             if sudo wget --timeout=30 -O "$output" "$@" "$url"; then
               return 0
             fi
-            echo "wget failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..."
+            echo "wget failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
             sleep $delay
             delay=$((delay * 2))
             attempt=$((attempt + 1))
           done
-          echo "ERROR: wget failed after $max_attempts attempts"
+          echo "ERROR: wget failed after $max_attempts attempts" >&2
           return 1
         }
 
@@ -444,10 +444,10 @@ runs:
           local delay=10
           until sudo git clone --depth 1 "$@"; do
             if [ $attempt -ge $max_attempts ]; then
-              echo "ERROR: git clone failed after $max_attempts attempts"
+              echo "ERROR: git clone failed after $max_attempts attempts" >&2
               return 1
             fi
-            echo "git clone failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..."
+            echo "git clone failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
             sleep $delay
             delay=$((delay * 2))
             attempt=$((attempt + 1))
@@ -475,12 +475,12 @@ runs:
             if sudo wget --timeout=30 -O "$output" "$@" "$url"; then
               return 0
             fi
-            echo "wget failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..."
+            echo "wget failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
             sleep $delay
             delay=$((delay * 2))
             attempt=$((attempt + 1))
           done
-          echo "ERROR: wget failed after $max_attempts attempts"
+          echo "ERROR: wget failed after $max_attempts attempts" >&2
           return 1
         }
 
