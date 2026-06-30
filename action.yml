@@ -55,7 +55,7 @@ inputs:
   pacman-source-urls:
     description: 'space separated fallback URLs to download pacman source tarball; use {version} placeholder'
     required: false
-    default: "https://ftp.ubuntu.com/ubuntu/pool/universe/p/pacman-package-manager/pacman-package-manager_{version}.orig.tar.xz https://ftp.ubuntu.com/ubuntu/pool/universe/p/pacman-package-manager/pacman-package-manager_{version}.orig.tar.gz https://ftp.debian.org/debian/pool/main/p/pacman-package-manager/pacman-package-manager_{version}.orig.tar.xz https://ftp.debian.org/debian/pool/main/p/pacman-package-manager/pacman-package-manager_{version}.orig.tar.gz https://gitlab.archlinux.org/pacman/pacman/-/releases/v{version}/downloads/pacman-{version}.tar.xz https://sources.archlinux.org/other/pacman/pacman-{version}.tar.xz"
+    default: "https://ftp.debian.org/debian/pool/main/p/pacman-package-manager/pacman-package-manager_{version}.orig.tar.xz https://ftp.debian.org/debian/pool/main/p/pacman-package-manager/pacman-package-manager_{version}.orig.tar.gz https://ftp.ubuntu.com/ubuntu/pool/universe/p/pacman-package-manager/pacman-package-manager_{version}.orig.tar.xz https://ftp.ubuntu.com/ubuntu/pool/universe/p/pacman-package-manager/pacman-package-manager_{version}.orig.tar.gz https://gitlab.archlinux.org/pacman/pacman/-/releases/v{version}/downloads/pacman-{version}.tar.xz https://sources.archlinux.org/other/pacman/pacman-{version}.tar.xz"
   archlinux-core-db-urls:
     description: 'space separated fallback URLs to Arch core.db (x86_64) used to resolve the latest archlinux-keyring package'
     required: false
@@ -111,6 +111,10 @@ runs:
     - id: install-build-dependencies
       shell: bash
       run: |
+        # Ensure script is LF-only to avoid CRLF parsing errors
+        if grep -q $'\r' "$0"; then
+          exec bash -c "$(tr -d '\r' < "$0")" "$@"
+        fi
         sudo apt-get update
         sudo apt-get install -y \
           gdisk \
@@ -153,6 +157,10 @@ runs:
         PACMAN_DETECT_URLS: ${{ inputs.pacman-detect-urls }}
         PACMAN_SOURCE_URLS: ${{ inputs.pacman-source-urls }}
       run: |
+        # Ensure script is LF-only to avoid CRLF parsing errors
+        if grep -q $'\r' "$0"; then
+          exec bash -c "$(tr -d '\r' < "$0")" "$@"
+        fi
         # Strip carriage returns that break URL iteration (Windows line endings)
         PACMAN_DETECT_URLS="${PACMAN_DETECT_URLS//$'\r'/}"
         PACMAN_SOURCE_URLS="${PACMAN_SOURCE_URLS//$'\r'/}"
@@ -300,6 +308,10 @@ runs:
     - id: install-keyrings
       shell: bash
       run: |
+        # Ensure script is LF-only
+        if grep -q $'\r' "$0"; then
+          exec bash -c "$(tr -d '\r' < "$0")" "$@"
+        fi
         retry_git_clone() {
           local max_attempts=5
           local attempt=1
@@ -411,6 +423,10 @@ runs:
       env:
         VERSION: "27"
       run: |
+        # Ensure script is LF-only
+        if grep -q $'\r' "$0"; then
+          exec bash -c "$(tr -d '\r' < "$0")" "$@"
+        fi
         retry_wget() {
           local output="$1"
           local url="$2"
@@ -442,6 +458,10 @@ runs:
     - id: install-calamares-tools
       shell: bash
       run: |
+        # Ensure script is LF-only
+        if grep -q $'\r' "$0"; then
+          exec bash -c "$(tr -d '\r' < "$0")" "$@"
+        fi
         retry_git_clone() {
           local max_attempts=5
           local attempt=1
@@ -468,6 +488,10 @@ runs:
       env:
         VERSION: "32"
       run: |
+        # Ensure script is LF-only
+        if grep -q $'\r' "$0"; then
+          exec bash -c "$(tr -d '\r' < "$0")" "$@"
+        fi
         retry_wget() {
           local output="$1"
           local url="$2"
