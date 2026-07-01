@@ -188,10 +188,10 @@ runs:
           local max_attempts=5
           local attempt=1
           local delay=10
-          # Remove target file to avoid protected_regular blocking root write
-          sudo rm -f "$output"
+          # Remove target file if present (as the current user)
+          rm -f "$output"
           while [ $attempt -le $max_attempts ]; do
-            if sudo wget --timeout=30 -O "$output" "$@" "$url"; then
+            if wget --timeout=30 -O "$output" "$@" "$url"; then
               return 0
             fi
             echo "wget failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
@@ -261,7 +261,7 @@ runs:
 
           dl_ok=0
           tmp_tar="/tmp/pacman-src.tar.xz"
-          sudo rm -f "${tmp_tar}"
+          rm -f "${tmp_tar}"
 
           for tmpl in ${PACMAN_SOURCE_URLS}; do
             url="${tmpl//\{version\}/${PACMAN_VER}}"
@@ -337,10 +337,10 @@ runs:
           local max_attempts=5
           local attempt=1
           local delay=10
-          # Remove target file to avoid protected_regular blocking root write
-          sudo rm -f "$output"
+          # Remove target file if present (as the current user)
+          rm -f "$output"
           while [ $attempt -le $max_attempts ]; do
-            if sudo wget --timeout=30 -O "$output" "$@" "$url"; then
+            if wget --timeout=30 -O "$output" "$@" "$url"; then
               return 0
             fi
             echo "wget failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
@@ -366,9 +366,9 @@ runs:
           ARCH_CORE_DB_URLS="${{ inputs.archlinux-core-db-urls }}"
           UA="Mozilla/5.0"
 
-          # Create temp files owned by root to avoid protected_regular issues
-          tmpdb="$(sudo mktemp)"
-          tmpdesc="$(sudo mktemp)"
+          # Create temp files as the runner user
+          tmpdb="$(mktemp)"
+          tmpdesc="$(mktemp)"
           pkgfile=""
 
           for dburl in ${ARCH_CORE_DB_URLS}; do
@@ -439,10 +439,10 @@ runs:
           local max_attempts=5
           local attempt=1
           local delay=10
-          # Remove target file to avoid protected_regular blocking root write
-          sudo rm -f "$output"
+          # Remove target file if present (as the current user)
+          rm -f "$output"
           while [ $attempt -le $max_attempts ]; do
-            if sudo wget --timeout=30 -O "$output" "$@" "$url"; then
+            if wget --timeout=30 -O "$output" "$@" "$url"; then
               return 0
             fi
             echo "wget failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
@@ -460,7 +460,8 @@ runs:
         sudo make -C arch-install-scripts-${VERSION} check
         sudo make -C arch-install-scripts-${VERSION} PREFIX=/usr install
 
-        retry_wget /etc/pacman-mirrors.conf "https://gitlab.manjaro.org/applications/pacman-mirrors/-/raw/master/data/etc/pacman-mirrors.conf"
+        # /etc requires root privileges
+        sudo retry_wget /etc/pacman-mirrors.conf "https://gitlab.manjaro.org/applications/pacman-mirrors/-/raw/master/data/etc/pacman-mirrors.conf"
 
     - id: install-calamares-tools
       shell: bash
@@ -506,10 +507,10 @@ runs:
           local max_attempts=5
           local attempt=1
           local delay=10
-          # Remove target file to avoid protected_regular blocking root write
-          sudo rm -f "$output"
+          # Remove target file if present (as the current user)
+          rm -f "$output"
           while [ $attempt -le $max_attempts ]; do
-            if sudo wget --timeout=30 -O "$output" "$@" "$url"; then
+            if wget --timeout=30 -O "$output" "$@" "$url"; then
               return 0
             fi
             echo "wget failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
