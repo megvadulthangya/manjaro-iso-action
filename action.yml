@@ -419,8 +419,16 @@ runs:
         sudo pacman-key --populate archlinux manjaro
 
         for gpg_key in ${{ inputs.additional-trusted-gpg }}; do
-          sudo pacman-key --keyserver keys.openpgp.org --recv-key $gpg_key || sudo pacman-key --keyserver keyserver.ubuntu.com --recv-key $gpg_key
-          sudo pacman-key --lsign-key $gpg_key
+          key_imported=0
+          sudo pacman-key --keyserver keys.openpgp.org --recv-key "$gpg_key" && key_imported=1 || true
+          if [ "$key_imported" -eq 0 ]; then
+            sudo pacman-key --keyserver keyserver.ubuntu.com --recv-key "$gpg_key" && key_imported=1 || true
+          fi
+          if [ "$key_imported" -eq 1 ]; then
+            sudo pacman-key --lsign-key "$gpg_key"
+          else
+            echo "## Warning: Failed to import GPG key $gpg_key from both keyservers, skipping lsign."
+          fi
         done
 
     - id: install-arch-install-scripts
