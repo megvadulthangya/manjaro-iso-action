@@ -419,15 +419,8 @@ runs:
         sudo pacman-key --populate archlinux manjaro
 
         for gpg_key in ${{ inputs.additional-trusted-gpg }}; do
-          sudo pacman-key --keyserver keys.openpgp.org --recv-key "$gpg_key" 2>/dev/null || true
-          sudo pacman-key --keyserver keyserver.ubuntu.com --recv-key "$gpg_key" 2>/dev/null || true
-          if sudo gpg --with-colons --list-keys "$gpg_key" | grep -q "^uid:"; then
-            sudo pacman-key --lsign-key "$gpg_key"
-          elif sudo gpg --list-keys "$gpg_key" >/dev/null 2>&1; then
-            echo "## Warning: GPG key $gpg_key exists but has no User ID, skipping lsign."
-          else
-            echo "## Warning: Could not find GPG key $gpg_key in keyring, skipping lsign."
-          fi
+          sudo pacman-key --keyserver keyserver.ubuntu.com --recv-key $gpg_key || sudo pacman-key --keyserver keys.openpgp.org --recv-key $gpg_key
+          sudo pacman-key --lsign-key $gpg_key
         done
 
     - id: install-arch-install-scripts
