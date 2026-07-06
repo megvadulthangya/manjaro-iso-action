@@ -425,7 +425,11 @@ runs:
             sudo pacman-key --keyserver keyserver.ubuntu.com --recv-key "$gpg_key" && key_imported=1 || true
           fi
           if [ "$key_imported" -eq 1 ]; then
-            sudo pacman-key --lsign-key "$gpg_key"
+            if sudo gpg --with-colons --list-keys "$gpg_key" | grep -q "^uid:"; then
+              sudo pacman-key --lsign-key "$gpg_key"
+            else
+              echo "## Warning: GPG key $gpg_key imported but has no User ID, skipping lsign."
+            fi
           else
             echo "## Warning: Failed to import GPG key $gpg_key from both keyservers, skipping lsign."
           fi
