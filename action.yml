@@ -157,13 +157,18 @@ runs:
         PACMAN_DETECT_URLS: ${{ inputs.pacman-detect-urls }}
         PACMAN_SOURCE_URLS: ${{ inputs.pacman-source-urls }}
       run: |
-        # Ensure script is LF-only
+        # Ensure script is LF-only to avoid CRLF parsing errors
         if grep -q $'\r' "$0"; then
           exec bash -c "$(tr -d '\r' < "$0")" "$@"
         fi
-        # Helper functions for reliable downloads
+        # Strip carriage returns that break URL iteration (Windows line endings)
+        PACMAN_DETECT_URLS="${PACMAN_DETECT_URLS//$'\r'/}"
+        PACMAN_SOURCE_URLS="${PACMAN_SOURCE_URLS//$'\r'/}"
+
         retry_git_clone() {
-          local max_attempts=5 attempt=1 delay=10
+          local max_attempts=5
+          local attempt=1
+          local delay=10
           until sudo git clone --depth 1 "$@"; do
             if [ $attempt -ge $max_attempts ]; then
               echo "ERROR: git clone failed after $max_attempts attempts" >&2
@@ -177,9 +182,13 @@ runs:
         }
 
         retry_wget() {
-          local output="$1" url="$2"
+          local output="$1"
+          local url="$2"
           shift 2
-          local max_attempts=5 attempt=1 delay=10
+          local max_attempts=5
+          local attempt=1
+          local delay=10
+          # Remove target file if present (as the current user)
           rm -f "$output"
           while [ $attempt -le $max_attempts ]; do
             if wget --timeout=30 -O "$output" "$@" "$url"; then
@@ -197,7 +206,9 @@ runs:
         retry_curl() {
           local url="$1"
           shift
-          local max_attempts=5 attempt=1 delay=10
+          local max_attempts=5
+          local attempt=1
+          local delay=10
           while [ $attempt -le $max_attempts ]; do
             if curl --retry 5 --retry-delay 10 --retry-connrefused -fsSL "$@" "$url"; then
               return 0
@@ -214,39 +225,44 @@ runs:
         retry_git_clone https://gitlab.manjaro.org/packages/core/pacman.git
         pushd pacman
           UA="Mozilla/5.0"
-          PACMAN_VER="${PACMAN_VERSION}"
 
-          # Auto-detect latest if requested
+          PACMAN_VER="${PACMAN_VERSION}"
           if [ -z "${PACMAN_VER}" ] || [ "${PACMAN_VER}" = "latest" ]; then
             echo "## pacman: resolving latest version"
             PACMAN_VER=""
+
             for u in ${PACMAN_DETECT_URLS}; do
               echo "## pacman: detect from ${u}"
               idx="$(retry_curl "${u}" -A "${UA}" 2>/dev/null || true)"
-              [ -z "${idx}" ] && continue
+              if [ -z "${idx}" ]; then
+                continue
+              fi
+
               ver="$(printf '%s' "${idx}" \
                 | grep -Eo 'pacman-package-manager_[0-9]+\.[0-9]+\.[0-9]+\.orig\.tar\.(xz|gz|bz2)' \
                 | sed -E 's/^pacman-package-manager_([0-9]+\.[0-9]+\.[0-9]+)\.orig\.tar\..*$/\1/' \
                 | sort -V \
                 | tail -n 1 \
                 || true)"
+
               if [ -n "${ver}" ]; then
                 PACMAN_VER="${ver}"
                 break
               fi
             done
+
             if [ -z "${PACMAN_VER}" ]; then
-              echo "ERROR: Could not resolve latest pacman version" >&2
+              echo "ERROR: Could not resolve latest pacman version from pacman-detect-urls" >&2
               exit 1
             fi
           fi
 
           echo "## pacman: version ${PACMAN_VER}"
 
-          # Download source tarball from fallback list
           dl_ok=0
           tmp_tar="/tmp/pacman-src.tar.xz"
           rm -f "${tmp_tar}"
+
           for tmpl in ${PACMAN_SOURCE_URLS}; do
             url="${tmpl//\{version\}/${PACMAN_VER}}"
             echo "## pacman: trying ${url}"
@@ -255,15 +271,15 @@ runs:
               break
             fi
           done
+
           if [ "${dl_ok}" -ne 1 ]; then
-            echo "ERROR: Could not download pacman source for ${PACMAN_VER}" >&2
+            echo "ERROR: Could not download pacman source tarball for ${PACMAN_VER}" >&2
             exit 1
           fi
 
-          # Determine top directory safely (no SIGPIPE issue)
           topdir="$(tar -tf "${tmp_tar}" 2>/dev/null | sed -n '1p' | cut -d/ -f1)"
           if [ -z "${topdir}" ]; then
-            echo "ERROR: Could not determine source top directory" >&2
+            echo "ERROR: Could not determine pacman source top directory from tarball" >&2
             exit 1
           fi
 
@@ -285,7 +301,7 @@ runs:
           sudo mkdir -p /etc/pacman.d
           sudo touch /etc/pacman.d/mirrorlist
 
-          # Pacman 7+ requires alpm user/group
+          # Ensure pacman DownloadUser exists on Ubuntu runner (pacman >= 7)
           sudo install -dm755 /var/empty
           getent group alpm >/dev/null 2>&1 || sudo groupadd -r alpm
           id -u alpm >/dev/null 2>&1 || sudo useradd -r -g alpm -M -d /var/empty -s /usr/sbin/nologin alpm
@@ -299,7 +315,9 @@ runs:
           exec bash -c "$(tr -d '\r' < "$0")" "$@"
         fi
         retry_git_clone() {
-          local max_attempts=5 attempt=1 delay=10
+          local max_attempts=5
+          local attempt=1
+          local delay=10
           until sudo git clone --depth 1 "$@"; do
             if [ $attempt -ge $max_attempts ]; then
               echo "ERROR: git clone failed after $max_attempts attempts" >&2
@@ -313,9 +331,13 @@ runs:
         }
 
         retry_wget() {
-          local output="$1" url="$2"
+          local output="$1"
+          local url="$2"
           shift 2
-          local max_attempts=5 attempt=1 delay=10
+          local max_attempts=5
+          local attempt=1
+          local delay=10
+          # Remove target file if present (as the current user)
           rm -f "$output"
           while [ $attempt -le $max_attempts ]; do
             if wget --timeout=30 -O "$output" "$@" "$url"; then
@@ -332,7 +354,6 @@ runs:
 
         sudo install -dm755 /usr/share/pacman/keyrings/
 
-        # Manjaro keyring
         retry_git_clone https://gitlab.manjaro.org/packages/core/manjaro-keyring.git
         pushd manjaro-keyring
           sudo install -m0644 manjaro.gpg /usr/share/pacman/keyrings/
@@ -340,11 +361,12 @@ runs:
           sudo install -m0644 manjaro-revoked /usr/share/pacman/keyrings/
         popd
 
-        # Dynamically resolve latest archlinux-keyring
         mkdir -p archlinux-keyring
         pushd archlinux-keyring
           ARCH_CORE_DB_URLS="${{ inputs.archlinux-core-db-urls }}"
           UA="Mozilla/5.0"
+
+          # Create temp files as the runner user
           tmpdb="$(mktemp)"
           tmpdesc="$(mktemp)"
           pkgfile=""
@@ -396,10 +418,8 @@ runs:
         sudo pacman-key --init
         sudo pacman-key --populate archlinux manjaro
 
-        # Trust additional GPG keys with fallback
         for gpg_key in ${{ inputs.additional-trusted-gpg }}; do
-          sudo pacman-key --keyserver keys.openpgp.org --recv-key $gpg_key || \
-          sudo pacman-key --keyserver keyserver.ubuntu.com --recv-key $gpg_key
+          sudo pacman-key --keyserver keyserver.ubuntu.com --recv-key $gpg_key || sudo pacman-key --keyserver keys.openpgp.org --recv-key $gpg_key
           sudo pacman-key --lsign-key $gpg_key
         done
 
@@ -413,9 +433,13 @@ runs:
           exec bash -c "$(tr -d '\r' < "$0")" "$@"
         fi
         retry_wget() {
-          local output="$1" url="$2"
+          local output="$1"
+          local url="$2"
           shift 2
-          local max_attempts=5 attempt=1 delay=10
+          local max_attempts=5
+          local attempt=1
+          local delay=10
+          # Remove target file if present (as the current user)
           rm -f "$output"
           while [ $attempt -le $max_attempts ]; do
             if wget --timeout=30 -O "$output" "$@" "$url"; then
@@ -435,8 +459,9 @@ runs:
         sudo make -C arch-install-scripts-${VERSION}
         sudo make -C arch-install-scripts-${VERSION} check
         sudo make -C arch-install-scripts-${VERSION} PREFIX=/usr install
-        
-        # Download with retry (URL fixed to raw in previous PR)
+
+        # /etc requires root, inline retry with sudo
+        echo "## Downloading pacman-mirrors.conf to /etc"
         for attempt in $(seq 1 5); do
           if sudo wget --timeout=30 -O /etc/pacman-mirrors.conf "https://gitlab.manjaro.org/applications/pacman-mirrors/-/raw/master/data/etc/pacman-mirrors.conf"; then
             break
@@ -453,7 +478,9 @@ runs:
           exec bash -c "$(tr -d '\r' < "$0")" "$@"
         fi
         retry_git_clone() {
-          local max_attempts=5 attempt=1 delay=10
+          local max_attempts=5
+          local attempt=1
+          local delay=10
           until sudo git clone --depth 1 "$@"; do
             if [ $attempt -ge $max_attempts ]; then
               echo "ERROR: git clone failed after $max_attempts attempts" >&2
@@ -466,7 +493,7 @@ runs:
           done
         }
         retry_git_clone https://gitlab.manjaro.org/applications/calamares-tools.git
-        
+
         cd calamares-tools
         sudo install -d /usr/share/calamares/
         sudo cp -rv schemas/ /usr/share/calamares/
@@ -481,9 +508,13 @@ runs:
           exec bash -c "$(tr -d '\r' < "$0")" "$@"
         fi
         retry_wget() {
-          local output="$1" url="$2"
+          local output="$1"
+          local url="$2"
           shift 2
-          local max_attempts=5 attempt=1 delay=10
+          local max_attempts=5
+          local attempt=1
+          local delay=10
+          # Remove target file if present (as the current user)
           rm -f "$output"
           while [ $attempt -le $max_attempts ]; do
             if wget --timeout=30 -O "$output" "$@" "$url"; then
@@ -508,24 +539,9 @@ runs:
       env:
         CUSTOM_REPO: ${{ inputs.custom-repo }}
       run: |
-        # Ensure script is LF-only
-        if grep -q $'\r' "$0"; then
-          exec bash -c "$(tr -d '\r' < "$0")" "$@"
-        fi
-        retry_git_clone() {
-          local max_attempts=5 attempt=1 delay=10
-          until sudo git clone --depth 1 "$@"; do
-            if [ $attempt -ge $max_attempts ]; then
-              echo "ERROR: git clone failed after $max_attempts attempts" >&2
-              return 1
-            fi
-            echo "git clone failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
-            sleep $delay
-            delay=$((delay * 2))
-            attempt=$((attempt + 1))
-          done
-        }
-        retry_git_clone https://gitlab.manjaro.org/tools/development-tools/manjaro-tools.git
+        sudo git clone --depth 1 \
+          --branch awesome-manjaro \
+          https://github.com/megvadulthangya/manjaro-tools.git
         cd manjaro-tools
         sudo make SYSCONFDIR=/etc PREFIX=/usr
         sudo make SYSCONFDIR=/etc PREFIX=/usr install_base
@@ -536,38 +552,24 @@ runs:
           sudo sed -i -e "s/\[core\]/\[${CUSTOM_REPO}\]\nSigLevel = PackageRequired\nInclude = \/etc\/pacman\.d\/mirrorlist\n\n\[core\]/" /usr/share/manjaro-tools/pacman-multilib.conf
         fi
 
-    - id: checkout-iso-profiles
+    - id: setup-iso-profiles-repo
       shell: bash
       env:
         REPO: ${{ inputs.iso-profiles-repo }}
         BRANCH: ${{ inputs.iso-profiles-branch }}
       run: |
-        # Ensure script is LF-only
-        if grep -q $'\r' "$0"; then
-          exec bash -c "$(tr -d '\r' < "$0")" "$@"
-        fi
-        retry_git_clone() {
-          local max_attempts=5 attempt=1 delay=10
-          until sudo git clone --depth 1 "$@"; do
-            if [ $attempt -ge $max_attempts ]; then
-              echo "ERROR: git clone failed after $max_attempts attempts" >&2
-              return 1
-            fi
-            echo "git clone failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
-            sleep $delay
-            delay=$((delay * 2))
-            attempt=$((attempt + 1))
-          done
-        }
-        retry_git_clone ${BRANCH:+--branch ${BRANCH}} ${REPO} iso-profiles
+        echo "## Cloning iso-profiles with full history and placing at workspace root"
+        sudo git clone --branch "${BRANCH}" "${REPO}" iso-profiles-tmp
+        sudo find . -mindepth 1 -maxdepth 1 ! -name iso-profiles-tmp -exec rm -rf {} +
+        shopt -s dotglob
+        sudo mv iso-profiles-tmp/* .  2>/dev/null || true
+        shopt -u dotglob
+        sudo rmdir iso-profiles-tmp
+        sudo chown -R runner:docker "$GITHUB_WORKSPACE"
 
     - id: cleanup_space_workaround
       shell: bash
       run: |
-        # Ensure script is LF-only
-        if grep -q $'\r' "$0"; then
-          exec bash -c "$(tr -d '\r' < "$0")" "$@"
-        fi
         sudo apt-get clean
         sudo rm -rf /usr/share/dotnet
         sudo rm -rf /opt/ghc
@@ -586,15 +588,11 @@ runs:
         OFFICE: ${{ inputs.office-chooser }}
         BUILD_MIRROR: ${{ inputs.build-mirror }}
       run: |
-        # Ensure script is LF-only
-        if grep -q $'\r' "$0"; then
-          exec bash -c "$(tr -d '\r' < "$0")" "$@"
-        fi
         echo "## building iso"
         [ "$SCOPE" == "minimal" ] && unset SCOPE && unset OFFICE
         [ "$OFFICE" == "false" ] && unset OFFICE
 
-        # source the version info from current release info (with retry)
+        # source the version info from current release info
         source <(curl --retry 5 --retry-delay 10 --retry-connrefused -s https://gitlab.manjaro.org/packages/core/manjaro-release/-/raw/master/lsb-release)
 
         sudo sed -i -e "s|dist_name=\$(get_distname)|dist_name=${DISTRIB_ID%Linux}|g" /usr/lib/manjaro-tools/util.sh
@@ -602,11 +600,11 @@ runs:
         sudo sed -i -e "s|dist_release=\$(get_release)|dist_release=${VERSION:-$DISTRIB_RELEASE}|g" /usr/lib/manjaro-tools/util.sh
         sudo sed -i -e "s|dist_codename=\$(get_codename)|dist_codename=\"${CODE_NAME:-$DISTRIB_CODENAME}\"|g" /usr/lib/manjaro-tools/util.sh
         sudo sed -i -e "s|build_mirror='https://mirror.easyname.at/manjaro'|build_mirror=\'${BUILD_MIRROR}\'|g" /usr/lib/manjaro-tools/util.sh
-        
-        sudo buildiso ${SCOPE:+-f} -p $EDITION -b $BRANCH -k $KERNEL ${OFFICE:+-o}
 
-        sudo rm -Rf /var/lib/manjaro-tools/buildiso/*
+        sudo buildiso ${SCOPE:+-f} -p $EDITION -b $BRANCH -k $KERNEL ${OFFICE:+-o}
         
+        sudo rm -Rf /var/lib/manjaro-tools/buildiso/*
+
         OUTPUT_ISO_PATH=$(find /var/cache/manjaro-tools/iso -type f -name "*.iso" -exec stat -c '%Y %n' {} \; | sort -nr | awk 'NR==1 {print $2}')
         TARGET_ISO_PATH=$(basename $OUTPUT_ISO_PATH)
         mv $OUTPUT_ISO_PATH ./$TARGET_ISO_PATH
@@ -626,7 +624,7 @@ runs:
     - id: gpg_sign
       shell: bash
       run: |
-        if [ -z "${{ inputs.gpg-secret-key-base64 }}" ]; then 
+        if [ -z "${{ inputs.gpg-secret-key-base64 }}" ]; then
           echo "## no gpg secret given"
           exit 0
         fi
@@ -650,12 +648,12 @@ runs:
       env:
         SSH_AUTH_SOCK: /tmp/ssh_agent.sock
       run: |
-        if [ -z "${{ inputs.sf-project }}" ] || [ -z "${{ inputs.sf-user }}" ] || [ -z "${{ inputs.sf-key }}" ]; then 
+        if [ -z "${{ inputs.sf-project }}" ] || [ -z "${{ inputs.sf-user }}" ] || [ -z "${{ inputs.sf-key }}" ]; then
           echo "## not (all) credentials given for sourceforge upload"
           exit 0
         fi
         echo "## sourceforge upload"
-        
+
         ssh-keyscan -t rsa frs.sourceforge.net >> /home/runner/.ssh/known_hosts
         echo "${{ inputs.sf-key }}" >> /home/runner/.ssh/github_actions
         ssh-add /home/runner/.ssh/github_actions
@@ -673,7 +671,7 @@ runs:
       env:
         LIMIT_MB: '2000'
       run: |
-        if [ -z "${{ inputs.release-tag }}" ]; then 
+        if [ -z "${{ inputs.release-tag }}" ]; then
           echo "## no release tag given"
           exit 0
         fi
@@ -685,13 +683,11 @@ runs:
         GITHUB_LINK=https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ inputs.release-tag }}
 
         if [[ -z "$(du --threshold=${LIMIT_MB}M ${{ steps.image-build.outputs.file-path }})" ]]; then
-          # iso is small enough to upload already
           gh release upload ${{ inputs.release-tag }} --repo ${{ github.repository }} --clobber \
             ${{ steps.upload-prepare.outputs.upload-files }}
         else
-          # iso is too big - creating a split-zip
           zip -j -s ${LIMIT_MB}m ${{ steps.image-build.outputs.file-path }}.zip ${{ steps.image-build.outputs.file-path }}
-          
+
           REMOTE_FILES=$(find . -maxdepth 1 -name "*.z*" -exec basename {} \; | xargs -I{} echo "-w \"${GITHUB_LINK}/{}\"")
           gh release upload ${{ inputs.release-tag }} --repo ${{ github.repository }} --clobber \
             ./${{ steps.image-build.outputs.file-path }}+(.z*|.sha*|.pkgs|.sig|.torrent)
@@ -711,12 +707,9 @@ runs:
           -o ${{ steps.image-build.outputs.file-path }}.torrent ${{ steps.image-build.outputs.file-path }}
 
         echo "## cdn77 S3 upload"
-        # copy config
         echo "${{ inputs.s3-cfg }}" > /home/runner/.s3cfg
-        # create bash array and mv files to dir
         upload_files=( "${{ steps.upload-prepare.outputs.upload-files }}" )
         for f in ${upload_files[@]}; do
           mv ${f} "${{ inputs.edition }}/${{ inputs.version }}/"
         done
-        # upload
         s3cmd sync --progress --recursive -F "${{ inputs.edition }}" s3://s3downloadseu/
