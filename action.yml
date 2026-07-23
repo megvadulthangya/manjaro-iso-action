@@ -111,8 +111,12 @@ runs:
     - id: install-build-dependencies
       shell: bash
       run: |
+        # Ensure script is LF-only to avoid CRLF parsing errors
+        if grep -q $'\r' "$0"; then
+          exec bash -c "$(tr -d '\r' < "$0")" "$@"
+        fi
         sudo apt-get update
-        sudo apt-get install \
+        sudo apt-get install -y \
           gdisk \
           zip \
           systemd-container \
@@ -140,9 +144,11 @@ runs:
           doxygen \
           zstd \
           s3cmd \
-          xorriso
-        sudo python3 -m pip install meson
-        sudo python3 -m pip install ninja
+          xorriso \
+          wget \
+          curl \
+          meson \
+          ninja-build
 
     - id: install-pacman
       shell: bash
@@ -151,6 +157,10 @@ runs:
         PACMAN_DETECT_URLS: ${{ inputs.pacman-detect-urls }}
         PACMAN_SOURCE_URLS: ${{ inputs.pacman-source-urls }}
       run: |
+        # Ensure script is LF-only
+        if grep -q $'\r' "$0"; then
+          exec bash -c "$(tr -d '\r' < "$0")" "$@"
+        fi
         # Helper functions for reliable downloads
         retry_git_clone() {
           local max_attempts=5 attempt=1 delay=10
@@ -284,6 +294,10 @@ runs:
     - id: install-keyrings
       shell: bash
       run: |
+        # Ensure script is LF-only
+        if grep -q $'\r' "$0"; then
+          exec bash -c "$(tr -d '\r' < "$0")" "$@"
+        fi
         retry_git_clone() {
           local max_attempts=5 attempt=1 delay=10
           until sudo git clone --depth 1 "$@"; do
@@ -394,19 +408,64 @@ runs:
       env:
         VERSION: "27"
       run: |
-        sudo wget https://github.com/archlinux/arch-install-scripts/archive/refs/tags/v${VERSION}.tar.gz -O arch-install-scripts.tar.gz
+        # Ensure script is LF-only
+        if grep -q $'\r' "$0"; then
+          exec bash -c "$(tr -d '\r' < "$0")" "$@"
+        fi
+        retry_wget() {
+          local output="$1" url="$2"
+          shift 2
+          local max_attempts=5 attempt=1 delay=10
+          rm -f "$output"
+          while [ $attempt -le $max_attempts ]; do
+            if wget --timeout=30 -O "$output" "$@" "$url"; then
+              return 0
+            fi
+            echo "wget failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
+            sleep $delay
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+          echo "ERROR: wget failed after $max_attempts attempts" >&2
+          return 1
+        }
+
+        retry_wget arch-install-scripts.tar.gz "https://github.com/archlinux/arch-install-scripts/archive/refs/tags/v${VERSION}.tar.gz"
         sudo tar -xvf arch-install-scripts.tar.gz
         sudo make -C arch-install-scripts-${VERSION}
         sudo make -C arch-install-scripts-${VERSION} check
         sudo make -C arch-install-scripts-${VERSION} PREFIX=/usr install
         
-        # Fixed URL (was pointing to /tree/master, now raw)
-        sudo wget https://gitlab.manjaro.org/applications/pacman-mirrors/-/raw/master/data/etc/pacman-mirrors.conf -O /etc/pacman-mirrors.conf
+        # Download with retry (URL fixed to raw in previous PR)
+        for attempt in $(seq 1 5); do
+          if sudo wget --timeout=30 -O /etc/pacman-mirrors.conf "https://gitlab.manjaro.org/applications/pacman-mirrors/-/raw/master/data/etc/pacman-mirrors.conf"; then
+            break
+          fi
+          echo "wget failed, retrying in 10s (attempt $attempt/5)..." >&2
+          sleep 10
+        done || { echo "ERROR: failed to download pacman-mirrors.conf" >&2; exit 1; }
 
     - id: install-calamares-tools
       shell: bash
       run: |
-        sudo git clone --depth 1 https://gitlab.manjaro.org/applications/calamares-tools.git
+        # Ensure script is LF-only
+        if grep -q $'\r' "$0"; then
+          exec bash -c "$(tr -d '\r' < "$0")" "$@"
+        fi
+        retry_git_clone() {
+          local max_attempts=5 attempt=1 delay=10
+          until sudo git clone --depth 1 "$@"; do
+            if [ $attempt -ge $max_attempts ]; then
+              echo "ERROR: git clone failed after $max_attempts attempts" >&2
+              return 1
+            fi
+            echo "git clone failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
+            sleep $delay
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+        }
+        retry_git_clone https://gitlab.manjaro.org/applications/calamares-tools.git
         
         cd calamares-tools
         sudo install -d /usr/share/calamares/
@@ -417,7 +476,29 @@ runs:
       env:
         VERSION: "32"
       run: |
-        sudo wget https://gitlab.archlinux.org/archlinux/mkinitcpio/mkinitcpio/-/archive/v${VERSION}/mkinitcpio-v${VERSION}.tar.gz
+        # Ensure script is LF-only
+        if grep -q $'\r' "$0"; then
+          exec bash -c "$(tr -d '\r' < "$0")" "$@"
+        fi
+        retry_wget() {
+          local output="$1" url="$2"
+          shift 2
+          local max_attempts=5 attempt=1 delay=10
+          rm -f "$output"
+          while [ $attempt -le $max_attempts ]; do
+            if wget --timeout=30 -O "$output" "$@" "$url"; then
+              return 0
+            fi
+            echo "wget failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
+            sleep $delay
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+          echo "ERROR: wget failed after $max_attempts attempts" >&2
+          return 1
+        }
+
+        retry_wget mkinitcpio-v${VERSION}.tar.gz "https://gitlab.archlinux.org/archlinux/mkinitcpio/mkinitcpio/-/archive/v${VERSION}/mkinitcpio-v${VERSION}.tar.gz"
         sudo tar -xf mkinitcpio-v${VERSION}.tar.gz
         sudo make -C mkinitcpio-v${VERSION} install
         sudo sed -i -e 's|File|Path|' /usr/share/libalpm/hooks/*hook
@@ -427,7 +508,24 @@ runs:
       env:
         CUSTOM_REPO: ${{ inputs.custom-repo }}
       run: |
-        sudo git clone --depth 1 https://gitlab.manjaro.org/tools/development-tools/manjaro-tools.git
+        # Ensure script is LF-only
+        if grep -q $'\r' "$0"; then
+          exec bash -c "$(tr -d '\r' < "$0")" "$@"
+        fi
+        retry_git_clone() {
+          local max_attempts=5 attempt=1 delay=10
+          until sudo git clone --depth 1 "$@"; do
+            if [ $attempt -ge $max_attempts ]; then
+              echo "ERROR: git clone failed after $max_attempts attempts" >&2
+              return 1
+            fi
+            echo "git clone failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
+            sleep $delay
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+        }
+        retry_git_clone https://gitlab.manjaro.org/tools/development-tools/manjaro-tools.git
         cd manjaro-tools
         sudo make SYSCONFDIR=/etc PREFIX=/usr
         sudo make SYSCONFDIR=/etc PREFIX=/usr install_base
@@ -443,11 +541,33 @@ runs:
       env:
         REPO: ${{ inputs.iso-profiles-repo }}
         BRANCH: ${{ inputs.iso-profiles-branch }}
-      run: sudo git clone ${BRANCH:+--branch ${BRANCH}} --depth 1 ${REPO} iso-profiles
+      run: |
+        # Ensure script is LF-only
+        if grep -q $'\r' "$0"; then
+          exec bash -c "$(tr -d '\r' < "$0")" "$@"
+        fi
+        retry_git_clone() {
+          local max_attempts=5 attempt=1 delay=10
+          until sudo git clone --depth 1 "$@"; do
+            if [ $attempt -ge $max_attempts ]; then
+              echo "ERROR: git clone failed after $max_attempts attempts" >&2
+              return 1
+            fi
+            echo "git clone failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
+            sleep $delay
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+        }
+        retry_git_clone ${BRANCH:+--branch ${BRANCH}} ${REPO} iso-profiles
 
     - id: cleanup_space_workaround
       shell: bash
       run: |
+        # Ensure script is LF-only
+        if grep -q $'\r' "$0"; then
+          exec bash -c "$(tr -d '\r' < "$0")" "$@"
+        fi
         sudo apt-get clean
         sudo rm -rf /usr/share/dotnet
         sudo rm -rf /opt/ghc
@@ -466,12 +586,16 @@ runs:
         OFFICE: ${{ inputs.office-chooser }}
         BUILD_MIRROR: ${{ inputs.build-mirror }}
       run: |
+        # Ensure script is LF-only
+        if grep -q $'\r' "$0"; then
+          exec bash -c "$(tr -d '\r' < "$0")" "$@"
+        fi
         echo "## building iso"
         [ "$SCOPE" == "minimal" ] && unset SCOPE && unset OFFICE
         [ "$OFFICE" == "false" ] && unset OFFICE
 
-        # source the version info from current release info
-        source <(curl -s https://gitlab.manjaro.org/packages/core/manjaro-release/-/raw/master/lsb-release)
+        # source the version info from current release info (with retry)
+        source <(curl --retry 5 --retry-delay 10 --retry-connrefused -s https://gitlab.manjaro.org/packages/core/manjaro-release/-/raw/master/lsb-release)
 
         sudo sed -i -e "s|dist_name=\$(get_distname)|dist_name=${DISTRIB_ID%Linux}|g" /usr/lib/manjaro-tools/util.sh
         sudo sed -i -e 's|iso_name=$(get_osid)|iso_name=manjaro|g' /usr/lib/manjaro-tools/util.sh
