@@ -5,7 +5,7 @@ inputs:
   iso-profiles-repo:
     description: 'iso profiles to clone'
     required: false
-    default: 'https://gitlab.manjaro.org/profiles-and-settings/iso-profiles'
+    default: 'https://code.manjaro.org/profiles/iso-profiles'
   iso-profiles-branch:
     description: 'branch of the iso profiles to check out'
     required: false
@@ -44,6 +44,14 @@ inputs:
     description: 'specific build mirror to use'
     required: false
     default: https://mirror.easyname.at/manjaro
+  pkgbuilds-branch:
+    description: 'branch of the PKGBUILDs repo to check out'
+    required: false
+    default: 'main'
+  pacman-mirrors-branch:
+    description: 'branch of the pacman-mirrors repo to check out'
+    required: false
+    default: 'master'
   pacman-version:
     description: 'pacman version to build ("latest" to auto-detect)'
     required: false
@@ -150,12 +158,29 @@ runs:
           meson \
           ninja-build
 
+    - id: checkout-packaging-sources
+      shell: bash
+      env:
+        PKGBUILDS_BRANCH: ${{ inputs.pkgbuilds-branch }}
+        PACMAN_MIRRORS_BRANCH: ${{ inputs.pacman-mirrors-branch }}
+      run: |
+        # Integrity-verified source for packaging metadata.
+        # Replaces separate raw/branch/* downloads with git clones.
+        # Placed in /tmp so it survives the workspace wipe performed by
+        # the later setup-iso-profiles-repo step.
+        rm -rf /tmp/PKGBUILDs /tmp/pacman-mirrors
+        git clone --depth 1 --branch "${PKGBUILDS_BRANCH}" \
+          https://code.manjaro.org/packages/PKGBUILDs.git /tmp/PKGBUILDs
+        git clone --depth 1 --branch "${PACMAN_MIRRORS_BRANCH}" \
+          https://code.manjaro.org/applications/pacman-mirrors.git /tmp/pacman-mirrors
+
     - id: install-pacman
       shell: bash
       env:
         PACMAN_VERSION: ${{ inputs.pacman-version }}
         PACMAN_DETECT_URLS: ${{ inputs.pacman-detect-urls }}
         PACMAN_SOURCE_URLS: ${{ inputs.pacman-source-urls }}
+        PKGBUILDS_DIR: /tmp/PKGBUILDs
       run: |
         # Ensure script is LF-only to avoid CRLF parsing errors
         if grep -q $'\r' "$0"; then
@@ -165,22 +190,6 @@ runs:
         PACMAN_DETECT_URLS="${PACMAN_DETECT_URLS//$'\r'/}"
         PACMAN_SOURCE_URLS="${PACMAN_SOURCE_URLS//$'\r'/}"
 
-        retry_git_clone() {
-          local max_attempts=5
-          local attempt=1
-          local delay=10
-          until sudo git clone --depth 1 "$@"; do
-            if [ $attempt -ge $max_attempts ]; then
-              echo "ERROR: git clone failed after $max_attempts attempts" >&2
-              return 1
-            fi
-            echo "git clone failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
-            sleep $delay
-            delay=$((delay * 2))
-            attempt=$((attempt + 1))
-          done
-        }
-
         retry_wget() {
           local output="$1"
           local url="$2"
@@ -188,7 +197,6 @@ runs:
           local max_attempts=5
           local attempt=1
           local delay=10
-          # Remove target file if present (as the current user)
           rm -f "$output"
           while [ $attempt -le $max_attempts ]; do
             if wget --timeout=30 -O "$output" "$@" "$url"; then
@@ -222,8 +230,9 @@ runs:
           return 1
         }
 
-        retry_git_clone https://gitlab.manjaro.org/packages/core/pacman.git
-        pushd pacman
+        # Build pacman in a temp working dir (no longer cloning pacman.git)
+        PACMAN_WORKDIR="$(mktemp -d)"
+        pushd "${PACMAN_WORKDIR}"
           UA="Mozilla/5.0"
 
           PACMAN_VER="${PACMAN_VERSION}"
@@ -296,8 +305,10 @@ runs:
             sudo meson install -C build
           popd
 
-          sudo install -m644 pacman.conf /etc/pacman.conf
-          sudo install -m644 makepkg.conf /etc/
+          # pacman.conf / makepkg.conf come from the integrity-verified
+          # PKGBUILDs checkout instead of separate raw downloads.
+          sudo install -m644 "${PKGBUILDS_DIR}/core/pacman/pacman.conf" /etc/pacman.conf
+          sudo install -m644 "${PKGBUILDS_DIR}/core/pacman/makepkg.conf" /etc/
           sudo mkdir -p /etc/pacman.d
           sudo touch /etc/pacman.d/mirrorlist
 
@@ -309,26 +320,13 @@ runs:
 
     - id: install-keyrings
       shell: bash
+      env:
+        PKGBUILDS_DIR: /tmp/PKGBUILDs
       run: |
         # Ensure script is LF-only
         if grep -q $'\r' "$0"; then
           exec bash -c "$(tr -d '\r' < "$0")" "$@"
         fi
-        retry_git_clone() {
-          local max_attempts=5
-          local attempt=1
-          local delay=10
-          until sudo git clone --depth 1 "$@"; do
-            if [ $attempt -ge $max_attempts ]; then
-              echo "ERROR: git clone failed after $max_attempts attempts" >&2
-              return 1
-            fi
-            echo "git clone failed, retrying in ${delay}s (attempt $attempt/$max_attempts)..." >&2
-            sleep $delay
-            delay=$((delay * 2))
-            attempt=$((attempt + 1))
-          done
-        }
 
         retry_wget() {
           local output="$1"
@@ -337,7 +335,6 @@ runs:
           local max_attempts=5
           local attempt=1
           local delay=10
-          # Remove target file if present (as the current user)
           rm -f "$output"
           while [ $attempt -le $max_attempts ]; do
             if wget --timeout=30 -O "$output" "$@" "$url"; then
@@ -354,19 +351,16 @@ runs:
 
         sudo install -dm755 /usr/share/pacman/keyrings/
 
-        retry_git_clone https://gitlab.manjaro.org/packages/core/manjaro-keyring.git
-        pushd manjaro-keyring
-          sudo install -m0644 manjaro.gpg /usr/share/pacman/keyrings/
-          sudo install -m0644 manjaro-trusted /usr/share/pacman/keyrings/
-          sudo install -m0644 manjaro-revoked /usr/share/pacman/keyrings/
-        popd
+        # Manjaro keyring from integrity-verified PKGBUILDs checkout
+        sudo install -m0644 "${PKGBUILDS_DIR}/core/manjaro-keyring/manjaro.gpg"     /usr/share/pacman/keyrings/
+        sudo install -m0644 "${PKGBUILDS_DIR}/core/manjaro-keyring/manjaro-trusted" /usr/share/pacman/keyrings/
+        sudo install -m0644 "${PKGBUILDS_DIR}/core/manjaro-keyring/manjaro-revoked" /usr/share/pacman/keyrings/
 
         mkdir -p archlinux-keyring
         pushd archlinux-keyring
           ARCH_CORE_DB_URLS="${{ inputs.archlinux-core-db-urls }}"
           UA="Mozilla/5.0"
 
-          # Create temp files as the runner user
           tmpdb="$(mktemp)"
           tmpdesc="$(mktemp)"
           pkgfile=""
@@ -427,6 +421,7 @@ runs:
       shell: bash
       env:
         VERSION: "27"
+        PACMAN_MIRRORS_DIR: /tmp/pacman-mirrors
       run: |
         # Ensure script is LF-only
         if grep -q $'\r' "$0"; then
@@ -439,7 +434,6 @@ runs:
           local max_attempts=5
           local attempt=1
           local delay=10
-          # Remove target file if present (as the current user)
           rm -f "$output"
           while [ $attempt -le $max_attempts ]; do
             if wget --timeout=30 -O "$output" "$@" "$url"; then
@@ -460,15 +454,9 @@ runs:
         sudo make -C arch-install-scripts-${VERSION} check
         sudo make -C arch-install-scripts-${VERSION} PREFIX=/usr install
 
-        # /etc requires root, inline retry with sudo
-        echo "## Downloading pacman-mirrors.conf to /etc"
-        for attempt in $(seq 1 5); do
-          if sudo wget --timeout=30 -O /etc/pacman-mirrors.conf "https://gitlab.manjaro.org/applications/pacman-mirrors/-/raw/master/data/etc/pacman-mirrors.conf"; then
-            break
-          fi
-          echo "wget failed, retrying in 10s (attempt $attempt/5)..." >&2
-          sleep 10
-        done || { echo "ERROR: failed to download pacman-mirrors.conf" >&2; exit 1; }
+        # pacman-mirrors.conf from integrity-verified pacman-mirrors checkout
+        echo "## Installing pacman-mirrors.conf from verified checkout"
+        sudo install -m0644 "${PACMAN_MIRRORS_DIR}/data/etc/pacman-mirrors.conf" /etc/pacman-mirrors.conf
 
     - id: install-calamares-tools
       shell: bash
@@ -492,7 +480,7 @@ runs:
             attempt=$((attempt + 1))
           done
         }
-        retry_git_clone https://gitlab.manjaro.org/applications/calamares-tools.git
+        retry_git_clone https://code.manjaro.org/applications/calamares-tools.git
 
         cd calamares-tools
         sudo install -d /usr/share/calamares/
@@ -514,7 +502,6 @@ runs:
           local max_attempts=5
           local attempt=1
           local delay=10
-          # Remove target file if present (as the current user)
           rm -f "$output"
           while [ $attempt -le $max_attempts ]; do
             if wget --timeout=30 -O "$output" "$@" "$url"; then
@@ -587,13 +574,14 @@ runs:
         CODE_NAME: ${{ inputs.code-name }}
         OFFICE: ${{ inputs.office-chooser }}
         BUILD_MIRROR: ${{ inputs.build-mirror }}
+        PKGBUILDS_DIR: /tmp/PKGBUILDs
       run: |
         echo "## building iso"
         [ "$SCOPE" == "minimal" ] && unset SCOPE && unset OFFICE
         [ "$OFFICE" == "false" ] && unset OFFICE
 
-        # source the version info from current release info
-        source <(curl --retry 5 --retry-delay 10 --retry-connrefused -s https://gitlab.manjaro.org/packages/core/manjaro-release/-/raw/master/lsb-release)
+        # source the version info from the integrity-verified PKGBUILDs checkout
+        source "${PKGBUILDS_DIR}/core/manjaro-release/lsb-release"
 
         sudo sed -i -e "s|dist_name=\$(get_distname)|dist_name=${DISTRIB_ID%Linux}|g" /usr/lib/manjaro-tools/util.sh
         sudo sed -i -e 's|iso_name=$(get_osid)|iso_name=manjaro|g' /usr/lib/manjaro-tools/util.sh
