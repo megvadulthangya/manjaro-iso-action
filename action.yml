@@ -43,7 +43,7 @@ inputs:
   build-mirror:
     description: 'specific build mirror to use'
     required: false
-    default: https://mirror.easyname.at/manjaro
+    default: https://mirrors.manjaro.org/repo
   pkgbuilds-branch:
     description: 'branch of the PKGBUILDs repo to check out'
     required: false
