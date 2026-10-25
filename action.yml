@@ -45,18 +45,26 @@ inputs:
     required: false
     default: https://mirrors.manjaro.org/repo
   pkgbuilds-branch:
-    description: 'branch of the PKGBUILDs repo to check out'
+    description: 'PKGBUILDs branch to use; latest commit is selected by default'
     required: false
     default: 'main'
+  pkgbuilds-commit:
+    description: 'Optional full commit SHA from pkgbuilds-branch to pin the source revision'
+    required: false
+    default: ''
   pacman-mirrors-branch:
-    description: 'branch of the pacman-mirrors repo to check out'
+    description: 'pacman-mirrors branch to use; latest commit is selected by default'
     required: false
     default: 'master'
+  pacman-mirrors-commit:
+    description: 'Optional full commit SHA from pacman-mirrors-branch to pin the source revision'
+    required: false
+    default: ''
   gpg-secret-key-base64:
     description: 'base64 encoded gpg secret key (without a passphrase) to sign the zip (if set)'
     required: false
   gpg-passphrase:
-    description: 'phrase to decrypt the gpg secret key if given'
+    description: 'phrase to decrypt the secret GPG key if given'
     required: false
   additional-trusted-gpg:
     description: 'gpg keyids that pacman should trust'
@@ -135,31 +143,122 @@ runs:
           xorriso
         sudo python3 -m pip install meson
         sudo python3 -m pip install ninja
+
     - id: checkout-packaging-sources
       shell: bash
       env:
         PKGBUILDS_BRANCH: ${{ inputs.pkgbuilds-branch }}
+        PKGBUILDS_COMMIT: ${{ inputs.pkgbuilds-commit }}
         PACMAN_MIRRORS_BRANCH: ${{ inputs.pacman-mirrors-branch }}
+        PACMAN_MIRRORS_COMMIT: ${{ inputs.pacman-mirrors-commit }}
       run: |
-        # Single integrity-verified source for packaging metadata.
-        # Replaces 7 unauthenticated raw/branch/* wget/curl operations with
-        # two git clones. Git provides content-addressed object integrity and
-        # an auditable history; the branch is explicit and overridable via
-        # the pkgbuilds-branch / pacman-mirrors-branch inputs.
-        rm -rf "$GITHUB_WORKSPACE/PKGBUILDs" "$GITHUB_WORKSPACE/pacman-mirrors"
-        git clone --depth 1 --branch "${PKGBUILDS_BRANCH}" \
-          https://code.manjaro.org/packages/PKGBUILDs.git "$GITHUB_WORKSPACE/PKGBUILDs"
-        git clone --depth 1 --branch "${PACMAN_MIRRORS_BRANCH}" \
-          https://code.manjaro.org/applications/pacman-mirrors.git "$GITHUB_WORKSPACE/pacman-mirrors"
+        set -euo pipefail
+
+        # Keep action-owned checkouts outside GITHUB_WORKSPACE so this action
+        # never deletes or overwrites directories belonging to the caller.
+        SOURCE_ROOT="$(mktemp -d "${RUNNER_TEMP%/}/manjaro-iso-action-sources.XXXXXX")"
+        PKGBUILDS_DIR="${SOURCE_ROOT}/PKGBUILDs"
+        PACMAN_MIRRORS_DIR="${SOURCE_ROOT}/pacman-mirrors"
+
+        {
+          echo "MANJARO_ISO_ACTION_PKGBUILDS_DIR=${PKGBUILDS_DIR}"
+          echo "MANJARO_ISO_ACTION_PACMAN_MIRRORS_DIR=${PACMAN_MIRRORS_DIR}"
+        } >> "${GITHUB_ENV}"
+
+        checkout_source() {
+          local source_name="$1"
+          local repository_url="$2"
+          local branch_name="$3"
+          local requested_commit="$4"
+          local destination="$5"
+          local resolved_commit
+
+          if [[ -z "${branch_name}" ]] || ! git check-ref-format --branch "${branch_name}" >/dev/null; then
+            echo "::error title=Invalid branch::A valid branch name is required for ${source_name}." >&2
+            return 1
+          fi
+
+          # A full SHA must be supplied for pinning. The commit must be part
+          # of the selected branch's history; otherwise fail instead of
+          # silently checking out an unrelated source revision.
+          if [[ -n "${requested_commit}" ]]; then
+            if [[ ! "${requested_commit}" =~ ^([[:xdigit:]]{40}|[[:xdigit:]]{64})$ ]]; then
+              echo "::error title=Invalid commit SHA::${source_name} commit must be a full 40-character or 64-character hexadecimal SHA." >&2
+              return 1
+            fi
+
+            echo "## Cloning ${source_name} branch ${branch_name} for commit verification"
+            git clone \
+              --depth 1 \
+              --single-branch \
+              --branch "${branch_name}" \
+              "${repository_url}" \
+              "${destination}"
+
+            # The pinned commit is often the branch tip, in which case no
+            # further fetch is needed. For an older commit, fetch branch
+            # history only on this explicit pinning path.
+            if ! git -C "${destination}" cat-file -e "${requested_commit}^{commit}" 2>/dev/null; then
+              git -C "${destination}" fetch --no-tags --unshallow origin "${branch_name}"
+            fi
+
+            if ! git -C "${destination}" cat-file -e "${requested_commit}^{commit}" 2>/dev/null; then
+              echo "::error title=Commit not found::${requested_commit} is not available in the history of ${source_name} branch ${branch_name}." >&2
+              return 1
+            fi
+
+            if ! git -C "${destination}" merge-base --is-ancestor \
+              "${requested_commit}" "refs/remotes/origin/${branch_name}"; then
+              echo "::error title=Commit is not on selected branch::${requested_commit} is not an ancestor of ${source_name} branch ${branch_name}." >&2
+              return 1
+            fi
+
+            git -C "${destination}" checkout --detach "${requested_commit}"
+          else
+            # Default behaviour: shallow-check out the latest commit on the
+            # selected branch. This is not a provenance/signature check.
+            echo "## Cloning latest ${source_name} commit from branch ${branch_name}"
+            git clone \
+              --depth 1 \
+              --single-branch \
+              --branch "${branch_name}" \
+              "${repository_url}" \
+              "${destination}"
+          fi
+
+          resolved_commit="$(git -C "${destination}" rev-parse --verify 'HEAD^{commit}')"
+
+          if [[ -n "${requested_commit}" && "${resolved_commit,,}" != "${requested_commit,,}" ]]; then
+            echo "::error title=Commit verification failed::Requested ${requested_commit}, but checked out ${resolved_commit}." >&2
+            return 1
+          fi
+
+          echo "## ${source_name} resolved commit: ${resolved_commit}"
+          echo "::notice title=${source_name} commit::${resolved_commit}"
+        }
+
+        checkout_source \
+          "PKGBUILDs" \
+          "https://code.manjaro.org/packages/PKGBUILDs.git" \
+          "${PKGBUILDS_BRANCH}" \
+          "${PKGBUILDS_COMMIT}" \
+          "${PKGBUILDS_DIR}"
+
+        checkout_source \
+          "pacman-mirrors" \
+          "https://code.manjaro.org/applications/pacman-mirrors.git" \
+          "${PACMAN_MIRRORS_BRANCH}" \
+          "${PACMAN_MIRRORS_COMMIT}" \
+          "${PACMAN_MIRRORS_DIR}"
+
     - id: install-pacman
       shell: bash
       env:
         PACMAN_VERSION: 6.0.2
-        PKGBUILDS_DIR: ${{ github.workspace }}/PKGBUILDs
       run: |
-        sudo wget https://sources.archlinux.org/other/pacman/pacman-${PACMAN_VERSION}.tar.xz
-        sudo tar -xvf pacman-${PACMAN_VERSION}.tar.xz
-        pushd pacman-${PACMAN_VERSION}
+        sudo wget "https://sources.archlinux.org/other/pacman/pacman-${PACMAN_VERSION}.tar.xz"
+        sudo tar -xvf "pacman-${PACMAN_VERSION}.tar.xz"
+        pushd "pacman-${PACMAN_VERSION}"
         ## sudo patch -p1 -i ../pacman-sync-first-option.patch
         sudo meson --prefix=/usr \
                     --buildtype=plain \
@@ -171,25 +270,23 @@ runs:
         sudo meson compile -C build
         sudo meson install -C build
         popd
-        sudo install -m644 "${PKGBUILDS_DIR}/core/pacman/pacman.conf" /etc/pacman.conf
-        sudo install -m644 "${PKGBUILDS_DIR}/core/pacman/makepkg.conf" /etc/
+        sudo install -m644 "${MANJARO_ISO_ACTION_PKGBUILDS_DIR}/core/pacman/pacman.conf" /etc/pacman.conf
+        sudo install -m644 "${MANJARO_ISO_ACTION_PKGBUILDS_DIR}/core/pacman/makepkg.conf" /etc/
         sudo mkdir -p /etc/pacman.d
         sudo touch /etc/pacman.d/mirrorlist
+
     - id: install-keyrings
       shell: bash
-      env:
-        PKGBUILDS_DIR: ${{ github.workspace }}/PKGBUILDs
       run: |
         sudo install -dm755 /usr/share/pacman/keyrings/
 
-        sudo install -m0644 "${PKGBUILDS_DIR}/core/manjaro-keyring/manjaro.gpg" /usr/share/pacman/keyrings/
-        sudo install -m0644 "${PKGBUILDS_DIR}/core/manjaro-keyring/manjaro-revoked" /usr/share/pacman/keyrings/
-        sudo install -m0644 "${PKGBUILDS_DIR}/core/manjaro-keyring/manjaro-trusted" /usr/share/pacman/keyrings/
+        sudo install -m0644 "${MANJARO_ISO_ACTION_PKGBUILDS_DIR}/core/manjaro-keyring/manjaro.gpg" /usr/share/pacman/keyrings/
+        sudo install -m0644 "${MANJARO_ISO_ACTION_PKGBUILDS_DIR}/core/manjaro-keyring/manjaro-revoked" /usr/share/pacman/keyrings/
+        sudo install -m0644 "${MANJARO_ISO_ACTION_PKGBUILDS_DIR}/core/manjaro-keyring/manjaro-trusted" /usr/share/pacman/keyrings/
 
         mkdir -p archlinux-keyring
         pushd archlinux-keyring
-          #wget https://archlinux.org/packages/core/any/archlinux-keyring/download -O /tmp/archlinux-keyring.tar.zst
-          # temp solution until Arch infra gets fixed
+          # Temporary solution until Arch infrastructure is fixed.
           wget https://mirrors.manjaro.org/repo/pool/sync/archlinux-keyring-20260727-1-any.pkg.tar.zst -O /tmp/archlinux-keyring.tar.zst
           tar --use-compress-program=unzstd --strip-components=4 --wildcards -xvf /tmp/archlinux-keyring.tar.zst usr/share/pacman/keyrings/*
           sudo install -m0644 archlinux.gpg /usr/share/pacman/keyrings/
@@ -201,39 +298,42 @@ runs:
         sudo pacman-key --populate archlinux manjaro
 
         for gpg_key in ${{ inputs.additional-trusted-gpg }}; do
-          sudo pacman-key --keyserver keys.openpgp.org --recv-key $gpg_key
-          sudo pacman-key --lsign-key $gpg_key
+          sudo pacman-key --keyserver keys.openpgp.org --recv-key "$gpg_key"
+          sudo pacman-key --lsign-key "$gpg_key"
         done
+
     - id: install-arch-install-scripts
       shell: bash
       env:
         VERSION: "27"
-        PACMAN_MIRRORS_DIR: ${{ github.workspace }}/pacman-mirrors
       run: |
-        sudo wget https://github.com/archlinux/arch-install-scripts/archive/refs/tags/v${VERSION}.tar.gz -O arch-install-scripts.tar.gz
+        sudo wget "https://github.com/archlinux/arch-install-scripts/archive/refs/tags/v${VERSION}.tar.gz" -O arch-install-scripts.tar.gz
         sudo tar -xvf arch-install-scripts.tar.gz
-        sudo make -C arch-install-scripts-${VERSION}
-        sudo make -C arch-install-scripts-${VERSION} check
-        sudo make -C arch-install-scripts-${VERSION} PREFIX=/usr install
+        sudo make -C "arch-install-scripts-${VERSION}"
+        sudo make -C "arch-install-scripts-${VERSION}" check
+        sudo make -C "arch-install-scripts-${VERSION}" PREFIX=/usr install
 
-        sudo install -m0644 "${PACMAN_MIRRORS_DIR}/data/etc/pacman-mirrors.conf" /etc/pacman-mirrors.conf
+        sudo install -m0644 "${MANJARO_ISO_ACTION_PACMAN_MIRRORS_DIR}/data/etc/pacman-mirrors.conf" /etc/pacman-mirrors.conf
+
     - id: install-calamares-tools
       shell: bash
       run: |
         sudo git clone --depth 1 https://code.manjaro.org/applications/calamares-tools.git
-        
+
         cd calamares-tools
         sudo install -d /usr/share/calamares/
         sudo cp -rv schemas/ /usr/share/calamares/
+
     - id: install-mkinitcpio
       shell: bash
       env:
         VERSION: "32"
       run: |
-        sudo wget https://gitlab.archlinux.org/archlinux/mkinitcpio/mkinitcpio/-/archive/v${VERSION}/mkinitcpio-v${VERSION}.tar.gz
-        sudo tar -xf mkinitcpio-v${VERSION}.tar.gz
-        sudo make -C mkinitcpio-v${VERSION} install
+        sudo wget "https://gitlab.archlinux.org/archlinux/mkinitcpio/mkinitcpio/-/archive/v${VERSION}/mkinitcpio-v${VERSION}.tar.gz"
+        sudo tar -xf "mkinitcpio-v${VERSION}.tar.gz"
+        sudo make -C "mkinitcpio-v${VERSION}" install
         sudo sed -i -e 's|File|Path|' /usr/share/libalpm/hooks/*hook
+
     - id: install-manjaro-tools
       shell: bash
       env:
@@ -245,16 +345,23 @@ runs:
         sudo make SYSCONFDIR=/etc PREFIX=/usr install_base
         sudo make SYSCONFDIR=/etc PREFIX=/usr install_yaml
         sudo make SYSCONFDIR=/etc PREFIX=/usr install_iso
-        if [ ! -z ${CUSTOM_REPO} ]; then
+        if [ ! -z "${CUSTOM_REPO}" ]; then
           echo "## adding repo [${CUSTOM_REPO}]"
           sudo sed -i -e "s/\[core\]/\[${CUSTOM_REPO}\]\nSigLevel = PackageRequired\nInclude = \/etc\/pacman\.d\/mirrorlist\n\n\[core\]/" /usr/share/manjaro-tools/pacman-multilib.conf
         fi
+
     - id: checkout-iso-profiles
       shell: bash
       env:
         REPO: ${{ inputs.iso-profiles-repo }}
         BRANCH: ${{ inputs.iso-profiles-branch }}
-      run: sudo git clone ${BRANCH:+--branch ${BRANCH}} --depth 1 ${REPO} iso-profiles
+      run: |
+        if [[ -n "${BRANCH}" ]]; then
+          sudo git clone --depth 1 --branch "${BRANCH}" "${REPO}" iso-profiles
+        else
+          sudo git clone --depth 1 "${REPO}" iso-profiles
+        fi
+
     - id: cleanup_space_workaround
       shell: bash
       run: |
@@ -263,6 +370,7 @@ runs:
         sudo rm -rf /opt/ghc
         sudo rm -rf "/usr/local/share/boost"
         sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+
     - id: image-build
       shell: bash
       env:
@@ -274,50 +382,61 @@ runs:
         CODE_NAME: ${{ inputs.code-name }}
         OFFICE: ${{ inputs.office-chooser }}
         BUILD_MIRROR: ${{ inputs.build-mirror }}
-        PKGBUILDS_DIR: ${{ github.workspace }}/PKGBUILDs
       run: |
         echo "## building iso"
         [ "$SCOPE" == "minimal" ] && unset SCOPE && unset OFFICE
         [ "$OFFICE" == "false" ] && unset OFFICE
 
-        # source the version info from the integrity-verified PKGBUILDs checkout
-        source "${PKGBUILDS_DIR}/core/manjaro-release/lsb-release"
+        # This file comes from the selected PKGBUILDs checkout. When a commit
+        # SHA is pinned, the checkout step verifies and selects that revision.
+        source "${MANJARO_ISO_ACTION_PKGBUILDS_DIR}/core/manjaro-release/lsb-release"
 
         sudo sed -i -e "s|dist_name=\$(get_distname)|dist_name=${DISTRIB_ID%Linux}|g" /usr/lib/manjaro-tools/util.sh
         sudo sed -i -e 's|iso_name=$(get_osid)|iso_name=manjaro|g' /usr/lib/manjaro-tools/util.sh
         sudo sed -i -e "s|dist_release=\$(get_release)|dist_release=${VERSION:-$DISTRIB_RELEASE}|g" /usr/lib/manjaro-tools/util.sh
         sudo sed -i -e "s|dist_codename=\$(get_codename)|dist_codename=\"${CODE_NAME:-$DISTRIB_CODENAME}\"|g" /usr/lib/manjaro-tools/util.sh
         sudo sed -i -e "s|build_mirror='https://mirror.easyname.at/manjaro'|build_mirror=\'${BUILD_MIRROR}\'|g" /usr/lib/manjaro-tools/util.sh
-        
-        sudo buildiso ${SCOPE:+-f} -p $EDITION -b $BRANCH -k $KERNEL ${OFFICE:+-o}
+
+        sudo buildiso ${SCOPE:+-f} -p "$EDITION" -b "$BRANCH" -k "$KERNEL" ${OFFICE:+-o}
 
         sudo rm -Rf /var/lib/manjaro-tools/buildiso/*
-        
+
         OUTPUT_ISO_PATH=$(find /var/cache/manjaro-tools/iso -type f -name "*.iso" -exec stat -c '%Y %n' {} \; | sort -nr | awk 'NR==1 {print $2}')
-        TARGET_ISO_PATH=$(basename $OUTPUT_ISO_PATH)
-        mv $OUTPUT_ISO_PATH ./$TARGET_ISO_PATH
-        echo "file-path=$TARGET_ISO_PATH" >> $GITHUB_OUTPUT
+        if [[ -z "$OUTPUT_ISO_PATH" || ! -f "$OUTPUT_ISO_PATH" ]]; then
+          echo "::error title=ISO build failed::No ISO file was found in the build output directory."
+          exit 1
+        fi
+
+        TARGET_ISO_PATH=$(basename "$OUTPUT_ISO_PATH")
+        mv "$OUTPUT_ISO_PATH" "./$TARGET_ISO_PATH"
+        echo "file-path=$TARGET_ISO_PATH" >> "$GITHUB_OUTPUT"
 
         FILE_PKG=$(find /var/cache/manjaro-tools/iso -type f -name "*-pkgs.txt" -exec stat -c '%Y %n' {} \; | sort -nr | awk 'NR==1 {print $2}')
-        mv $FILE_PKG ./${TARGET_ISO_PATH}.pkgs
+        if [[ -n "$FILE_PKG" && -f "$FILE_PKG" ]]; then
+          mv "$FILE_PKG" "./${TARGET_ISO_PATH}.pkgs"
+        fi
+
     - id: hash
       shell: bash
       run: |
         echo "## calculating hashes"
-        sha1sum ${{ steps.image-build.outputs.file-path }} >${{ steps.image-build.outputs.file-path }}.sha1
-        sha256sum ${{ steps.image-build.outputs.file-path }} >${{ steps.image-build.outputs.file-path }}.sha256
-        sha512sum ${{ steps.image-build.outputs.file-path }} >${{ steps.image-build.outputs.file-path }}.sha512
+        ISO_PATH="${{ steps.image-build.outputs.file-path }}"
+        sha1sum "$ISO_PATH" > "${ISO_PATH}.sha1"
+        sha256sum "$ISO_PATH" > "${ISO_PATH}.sha256"
+        sha512sum "$ISO_PATH" > "${ISO_PATH}.sha512"
+
     - id: gpg_sign
       shell: bash
       run: |
         # if is not yet supported in composite https://github.com/actions/runner/blob/main/docs/adrs/0549-composite-run-steps.md#if-condition
-        if [ -z "${{ inputs.gpg-secret-key-base64 }}" ]; then 
+        if [ -z "${{ inputs.gpg-secret-key-base64 }}" ]; then
           echo "## no gpg secret given"
           exit 0
         fi
         echo "## gpg signing"
-        cat <(echo -e "${{ inputs.gpg-secret-key-base64 }}" | base64 --decode) | gpg --batch --import &>/dev/null
-        gpg --pinentry-mode loopback --passphrase "${{ inputs.gpg-passphrase }}" --detach-sign ./${{ steps.image-build.outputs.file-path }}
+        printf '%s' "${{ inputs.gpg-secret-key-base64 }}" | base64 --decode | gpg --batch --import &>/dev/null
+        gpg --pinentry-mode loopback --passphrase "${{ inputs.gpg-passphrase }}" --batch --detach-sign "./${{ steps.image-build.outputs.file-path }}"
+
     - id: upload-prepare
       shell: bash -O extglob {0}
       run: |
@@ -326,64 +445,59 @@ runs:
         touch /home/runner/.ssh/github_actions
         chmod 600 /home/runner/.ssh/github_actions
         ssh-agent -a /tmp/ssh_agent.sock > /dev/null
-        echo "upload-files=./${{ steps.image-build.outputs.file-path }}+(|.sha*|.pkgs|.sig|.torrent)" >> $GITHUB_OUTPUT
-        mkdir -p ${{ inputs.edition }}/${{ inputs.version }}
+        echo "upload-files=./${{ steps.image-build.outputs.file-path }}+(|.sha*|.pkgs|.sig|.torrent)" >> "$GITHUB_OUTPUT"
+        mkdir -p "${{ inputs.edition }}/${{ inputs.version }}"
+
     - name: upload-sourceforge
       shell: bash -O extglob {0}
       env:
         SSH_AUTH_SOCK: /tmp/ssh_agent.sock
       run: |
-        # if is not yet supported in composite https://github.com/actions/runner/blob/main/docs/adrs/0549-composite-run-steps.md#if-condition
-        if [ -z "${{ inputs.sf-project }}" ] || [ -z "${{ inputs.sf-user }}" ] || [ -z "${{ inputs.sf-key }}" ]; then 
+        if [ -z "${{ inputs.sf-project }}" ] || [ -z "${{ inputs.sf-user }}" ] || [ -z "${{ inputs.sf-key }}" ]; then
           echo "## not (all) credentials given for sourceforge upload"
           exit 0
         fi
         echo "## sourceforge upload"
-        
+
         ssh-keyscan -t rsa frs.sourceforge.net >> /home/runner/.ssh/known_hosts
         echo "${{ inputs.sf-key }}" >> /home/runner/.ssh/github_actions
         ssh-add /home/runner/.ssh/github_actions
 
-        ## create target dir
         rsync -vaP --stats -e ssh ${{ inputs.edition }} \
-          ${{ inputs.sf-user }}@frs.sourceforge.net:/home/frs/project/${{ inputs.sf-project }}/
+          "${{ inputs.sf-user }}@frs.sourceforge.net:/home/frs/project/${{ inputs.sf-project }}/"
 
-        ## upload
         rsync -vaP --stats -e ssh ${{ steps.upload-prepare.outputs.upload-files }} \
-          ${{ inputs.sf-user }}@frs.sourceforge.net:/home/frs/project/${{ inputs.sf-project }}/${{ inputs.edition }}/${{ inputs.version }}/
+          "${{ inputs.sf-user }}@frs.sourceforge.net:/home/frs/project/${{ inputs.sf-project }}/${{ inputs.edition }}/${{ inputs.version }}/"
+
     - id: upload-github-release
       shell: bash -O extglob {0}
       env:
         LIMIT_MB: '2000'
       run: |
-        # if is not yet supported in composite https://github.com/actions/runner/blob/main/docs/adrs/0549-composite-run-steps.md#if-condition
-        if [ -z "${{ inputs.release-tag }}" ]; then 
+        if [ -z "${{ inputs.release-tag }}" ]; then
           echo "## no release tag given"
           exit 0
         fi
         echo "## github upload"
 
-        echo ${{ github.token }} | gh auth login --with-token
-        gh release create ${{ inputs.release-tag }} --title ${{ inputs.release-tag }} --repo ${{ github.repository }} --notes "automated release" || echo "release already exists"
+        echo "${{ github.token }}" | gh auth login --with-token
+        gh release create "${{ inputs.release-tag }}" --title "${{ inputs.release-tag }}" --repo "${{ github.repository }}" --notes "automated release" || echo "release already exists"
 
-        GITHUB_LINK=https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ inputs.release-tag }}
+        GITHUB_LINK="https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ inputs.release-tag }}"
 
-        if [[ -z "$(du --threshold=${LIMIT_MB}M ${{ steps.image-build.outputs.file-path }})" ]]; then
-          # iso is small enough to upload already
-          gh release upload ${{ inputs.release-tag }} --repo ${{ github.repository }} --clobber \
+        if [[ -z "$(du --threshold="${LIMIT_MB}"M "${{ steps.image-build.outputs.file-path }}")" ]]; then
+          gh release upload "${{ inputs.release-tag }}" --repo "${{ github.repository }}" --clobber \
             ${{ steps.upload-prepare.outputs.upload-files }}
         else
-          # iso is too big - creating a split-zip
-          zip -j -s ${LIMIT_MB}m ${{ steps.image-build.outputs.file-path }}.zip ${{ steps.image-build.outputs.file-path }}
-          
-          REMOTE_FILES=$(find . -maxdepth 1 -name "*.z*" -exec basename {} \; | xargs -I{} echo "-w \"${GITHUB_LINK}/{}\"")
-          gh release upload ${{ inputs.release-tag }} --repo ${{ github.repository }} --clobber \
+          zip -j -s "${LIMIT_MB}"m "${{ steps.image-build.outputs.file-path }}.zip" "${{ steps.image-build.outputs.file-path }}"
+
+          gh release upload "${{ inputs.release-tag }}" --repo "${{ github.repository }}" --clobber \
             ./${{ steps.image-build.outputs.file-path }}+(.z*|.sha*|.pkgs|.sig|.torrent)
         fi
+
     - name: upload-cdn77-s3
       shell: bash -O extglob {0}
       run: |
-        # if is not yet supported in composite https://github.com/actions/runner/blob/main/docs/adrs/0549-composite-run-steps.md#if-condition
         if [ -z "${{ inputs.s3-cfg }}" ]; then
           echo "## credentials for cdn77 S3 upload not provided. Skipping."
           exit 0
@@ -392,15 +506,32 @@ runs:
         echo "## create torrent"
         mktorrent -v -a udp://tracker.opentrackr.org:1337 -l 21 \
           -w "https://download.manjaro.org/${{ inputs.edition }}/${{ inputs.version }}/${{ steps.image-build.outputs.file-path }}" \
-          -o ${{ steps.image-build.outputs.file-path }}.torrent ${{ steps.image-build.outputs.file-path }}
+          -o "${{ steps.image-build.outputs.file-path }}.torrent" "${{ steps.image-build.outputs.file-path }}"
 
         echo "## cdn77 S3 upload"
-        # copy config
-        echo "${{ inputs.s3-cfg }}" > /home/runner/.s3cfg
-        # create bash array and mv files to dir
-        upload_files=( "${{ steps.upload-prepare.outputs.upload-files }}" )
-        for f in ${upload_files[@]}; do
-          mv ${f} "${{ inputs.edition }}/${{ inputs.version }}/"
+        printf '%s\n' "${{ inputs.s3-cfg }}" > /home/runner/.s3cfg
+
+        # Expand patterns while assigning the array. Keep each resolved path
+        # quoted while moving it so spaces are not split and glob characters
+        # are not re-expanded in a filename.
+        shopt -s nullglob
+        ISO_PATH="${{ steps.image-build.outputs.file-path }}"
+        upload_files=( "$ISO_PATH" )
+
+        if [[ ! -f "$ISO_PATH" ]]; then
+          echo "::error title=Upload preparation failed::The generated ISO is missing: ${ISO_PATH}" >&2
+          exit 1
+        fi
+
+        # Include optional sidecar files only when they actually exist.
+        for file in "$ISO_PATH".sha* "$ISO_PATH".pkgs "$ISO_PATH".sig "$ISO_PATH".torrent; do
+          if [[ -f "$file" ]]; then
+            upload_files+=( "$file" )
+          fi
         done
-        # upload
+
+        for file in "${upload_files[@]}"; do
+          mv -- "$file" "${{ inputs.edition }}/${{ inputs.version }}/"
+        done
+
         s3cmd sync --progress --recursive -F "${{ inputs.edition }}" s3://s3downloadseu/
